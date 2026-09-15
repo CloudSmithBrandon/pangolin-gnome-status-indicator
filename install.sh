@@ -3,28 +3,42 @@ set -euo pipefail
 
 EXTENSION_UUID="pangolin-indicator@yetanother.at"
 INSTALL_DIR="${HOME}/.local/share/gnome-shell/extensions/${EXTENSION_UUID}"
+SHIPPED=(metadata.json extension.js status.js askpass.sh)
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "Installing Pangolin VPN Status Indicator..."
 
 mkdir -p "${INSTALL_DIR}"
-
-cp metadata.json "${INSTALL_DIR}/"
-cp extension.js "${INSTALL_DIR}/"
-cp status.js "${INSTALL_DIR}/"
-cp stylesheet.css "${INSTALL_DIR}/"
-cp askpass.sh "${INSTALL_DIR}/"
+for f in "${SHIPPED[@]}"; do
+    cp "${REPO_DIR}/${f}" "${INSTALL_DIR}/"
+done
 chmod +x "${INSTALL_DIR}/askpass.sh"
 
-echo "Installed to ${INSTALL_DIR}"
-echo ""
-echo "To enable:"
-echo "  1. Log out and log back in (or restart GNOME Shell: Alt+F2 → r)"
-echo "  2. Run: gnome-extensions enable ${EXTENSION_UUID}"
-echo ""
-echo "Or use the Extensions app to toggle it on."
+# Ensure the extension is marked enabled in dconf (idempotent).
+if command -v gsettings &>/dev/null; then
+    CURRENT="$(gsettings get org.gnome.shell enabled-extensions)"
+    if [[ "${CURRENT}" != *"${EXTENSION_UUID}"* ]]; then
+        gsettings set org.gnome.shell enabled-extensions \
+            "$(printf '%s' "${CURRENT}" | sed "s/]$/, '${EXTENSION_UUID}']/")"
+    fi
+fi
 
-if command -v gnome-extensions &>/dev/null; then
+# GNOME Shell only scans the extensions directory at startup, so a shell that
+# has never seen this extension cannot load it now (GNOME 50 removed the
+# InstallBundle D-Bus method that allowed this). One logout is unavoidable for
+# the first activation. Afterwards, updates apply live via ReloadExtension.
+if gnome-extensions list 2>/dev/null | grep -q "^${EXTENSION_UUID}$"; then
+    gnome-extensions disable "${EXTENSION_UUID}" 2>/dev/null || true
+    gdbus call --session \
+        --dest org.gnome.Shell.Extensions \
+        --object-path /org/gnome/Shell/Extensions \
+        --method org.gnome.Shell.Extensions.ReloadExtension "${EXTENSION_UUID}" >/dev/null
+    gnome-extensions enable "${EXTENSION_UUID}" 2>/dev/null || true
     echo ""
-    echo "Enabling extension..."
-    gnome-extensions enable "${EXTENSION_UUID}" 2>/dev/null && echo "Extension enabled!" || echo "You may need to restart GNOME Shell first."
+    echo "Updated and reloaded — the running session is using the new code."
+else
+    echo ""
+    echo "Installed to ${INSTALL_DIR}"
+    echo "Log out and back in once to activate it."
+    echo "(After that, future installs apply live without logging out.)"
 fi

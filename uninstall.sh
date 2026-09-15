@@ -7,8 +7,12 @@ INSTALL_DIR="${HOME}/.local/share/gnome-shell/extensions/${EXTENSION_UUID}"
 echo "Disabling extension..."
 gnome-extensions disable "${EXTENSION_UUID}" 2>/dev/null || true
 
-echo "Removing ${INSTALL_DIR}..."
-rm -rf "${INSTALL_DIR}"
+if command -v gnome-extensions &>/dev/null && gnome-extensions uninstall "${EXTENSION_UUID}" 2>/dev/null; then
+    echo "Uninstalled via gnome-shell (no restart needed)."
+else
+    echo "Removing ${INSTALL_DIR}..."
+    rm -rf "${INSTALL_DIR}"
+    echo "Removed. Log out/in if the tile is still visible in this session."
+fi
 
 echo "Pangolin VPN Status Indicator uninstalled."
-echo "Restart GNOME Shell (Alt+F2 → r) or log out/in to complete."

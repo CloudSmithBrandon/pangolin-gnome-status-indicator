@@ -38,6 +38,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
 
         this._extension = extension;
         this._connected = false;
+        this._busy = false;
 
         this.menu.setHeader(DISCONNECTED_ICON, 'Pangolin VPN', 'Disconnected');
 
@@ -54,6 +55,8 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
     }
 
     _onToggle() {
+        if (this._busy)
+            return;
         if (this._connected)
             this._disconnect();
         else
@@ -61,6 +64,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
     }
 
     _connect() {
+        this._busy = true;
         this._setStatusConnecting();
 
         this._extension.runCommand([PANGOLIN_BINARY, 'up', '--silent'])
@@ -72,15 +76,22 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
                 return this._extension.runCommand([PANGOLIN_BINARY, 'up'], {sudo: true})
                     .then(() => this._extension.requestRapidPoll());
             })
-            .catch(() => {});
+            .catch(() => {})
+            .finally(() => {
+                this._busy = false;
+            });
     }
 
     _disconnect() {
+        this._busy = true;
         this._setStatusConnecting();
 
         this._extension.runCommand([PANGOLIN_BINARY, 'down'])
             .then(() => this._extension.requestRapidPoll())
-            .catch(() => {});
+            .catch(() => {})
+            .finally(() => {
+                this._busy = false;
+            });
     }
 
     _setStatusConnecting() {
@@ -204,8 +215,12 @@ export default class PangolinStatusExtension extends Extension {
      * (used right after up/down), bounded by RAPID_POLL_MAX_ATTEMPTS.
      */
     requestRapidPoll() {
-        this._removeSource('_rapidSource');
         this._rapidAttempts = 0;
+        this._scheduleRapidTick();
+    }
+
+    _scheduleRapidTick() {
+        this._removeSource('_rapidSource');
 
         this._rapidSource = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, RAPID_POLL_INTERVAL, () => {
             this._rapidSource = null;
@@ -224,7 +239,7 @@ export default class PangolinStatusExtension extends Extension {
                 this.applyStatus(status);
                 return;
             }
-            this.requestRapidPoll();
+            this._scheduleRapidTick(); // keep the attempt count; do not reset it
         }).catch(() => {});
     }
 

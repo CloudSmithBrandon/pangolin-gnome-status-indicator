@@ -19,9 +19,11 @@ Fork of
   of assuming any running client is connected.
 - All timer sources are tracked and removed on disable; in-flight subprocesses
   are cancelled through a shared `GCancellable`.
-- If both connect attempts fail, the indicator no longer sticks on
-  "Connecting..." — a bounded rapid poll restores the honest state within
-  seconds.
+- Connect attempts are guarded against double-clicks, and the rapid poll that
+  follows up/down is genuinely bounded — a failed connect can no longer spin
+  a 2-second poll loop indefinitely.
+- Updates to an already-activated extension apply live through the shell's
+  `ReloadExtension` D-Bus method — no restart needed after the first install.
 - Subprocess/status helpers live in `status.js` with no Shell imports, so
   they are unit-testable outside the shell.
 
@@ -31,12 +33,17 @@ Fork of
 ./install.sh
 ```
 
-Then log out and back in (Wayland) or restart GNOME Shell (X11: Alt+F2 → `r`),
-and enable via the Extensions app or:
+GNOME Shell only scans the extensions directory at startup, and GNOME 50
+removed the `InstallBundle` D-Bus method, so the **first** activation needs
+one logout/login. `install.sh` copies the files, marks the extension enabled,
+and tells you when that is the case.
 
-```bash
-gnome-extensions enable pangolin-indicator@yetanother.at
-```
+Once the shell knows the extension, re-running `install.sh` reloads it live
+(`ReloadExtension`) — no logout needed. `./uninstall.sh` removes it live too.
+
+Note: extensions installed from extensions.gnome.org load live because the
+shell downloads and registers them in one step (`InstallRemoteExtension`);
+that service only accepts extensions published on the EGO site.
 
 ## Uninstall
 
