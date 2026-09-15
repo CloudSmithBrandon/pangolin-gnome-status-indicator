@@ -20,6 +20,9 @@ import {
     DISCONNECTED_ICON,
     execAsync,
     interpretStatus,
+    parseAuthStatus,
+    shortHost,
+    summarizePeers,
 } from './status.js';
 
 const PANGOLIN_BINARY = 'pangolin';
@@ -50,6 +53,11 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this.menu.addAction('Open Logs', () => {
             this._extension.runCommand(['ptyxis', '--', PANGOLIN_BINARY, 'logs']);
         });
+
+        this._signInItem = this.menu.addAction('Sign In…', () => {
+            this._extension.runCommand(['ptyxis', '--', PANGOLIN_BINARY, 'login']);
+        });
+        this._signInItem.visible = false;
 
         this.connect('clicked', () => this._onToggle());
     }
@@ -97,33 +105,63 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
     _setStatusConnecting() {
         this._connected = false;
         this.checked = false;
+        this.subtitle = 'Connecting...';
         this.menu.setHeader(CONNECTING_ICON, 'Pangolin VPN', 'Connecting...');
         this._updateStatusSection(null);
     }
 
-    updateStatus(connected, details) {
+    updateStatus({connected, data, auth}) {
         this._connected = connected;
         this.checked = connected;
 
-        if (connected)
-            this.menu.setHeader(CONNECTED_ICON, 'Pangolin VPN', 'Connected');
-        else
+        if (connected) {
+            const summary = summarizePeers(data);
+            const sites = summary.sites.filter(s => s.connected).map(s => s.name);
+            const host = shortHost(auth?.serverUrl) ?? data?.orgId ?? 'Connected';
+            const subtitle = sites.length > 0 ? `${host} · ${sites.join(', ')}` : host;
+            this.subtitle = subtitle;
+            this.menu.setHeader(CONNECTED_ICON, 'Pangolin VPN', subtitle);
+        } else if (auth && !auth.loggedIn) {
+            this.subtitle = 'Not signed in';
+            this.menu.setHeader(DISCONNECTED_ICON, 'Pangolin VPN', 'Not signed in');
+        } else {
+            this.subtitle = 'Disconnected';
             this.menu.setHeader(DISCONNECTED_ICON, 'Pangolin VPN', 'Disconnected');
+        }
 
-        this._updateStatusSection(details);
+        this._signInItem.visible = !connected && auth?.loggedIn === false;
+        this._updateStatusSection({connected, data, auth});
     }
 
-    _updateStatusSection(details) {
+    _updateStatusSection({connected, data, auth}) {
         this._statusSection.removeAll();
 
-        if (!details)
+        if (!connected || !data)
             return;
 
-        for (const [key, value] of Object.entries(details)) {
-            if (value && typeof value === 'string') {
-                this._statusSection.addMenuItem(new PopupMenu.PopupMenuItem(
-                    `${key}: ${value}`, {reactive: false}));
-            }
+        const summary = summarizePeers(data);
+        const rows = [];
+        if (auth?.serverUrl)
+            rows.push(['Server', auth.serverUrl]);
+        if (auth?.user)
+            rows.push(['User', auth.user]);
+        if (data.orgId)
+            rows.push(['Org', data.orgId]);
+
+        for (const site of summary.sites.filter(s => s.connected)) {
+            const rtt = site.rtt !== null ? `, ${site.rtt} ms` : '';
+            const relay = site.isRelay ? ' (relay)' : '';
+            rows.push(['Site', `${site.name}${relay}${rtt}`]);
+        }
+
+        if (summary.tunnelIps.length > 0)
+            rows.push(['Tunnel IP', summary.tunnelIps.join(', ')]);
+        if (data.version)
+            rows.push(['CLI', `v${data.version}`]);
+
+        for (const [key, value] of rows) {
+            this._statusSection.addMenuItem(new PopupMenu.PopupMenuItem(
+                `${key}: ${value}`, {reactive: false}));
         }
     }
 });
@@ -140,10 +178,11 @@ class PangolinIndicator extends QuickSettings.SystemIndicator {
         this.quickSettingsItems.push(this._toggle);
     }
 
-    applyStatus({connected, data}) {
+    applyStatus(status) {
+        const {connected} = status;
         this._indicator.icon_name = connected ? CONNECTED_ICON : DISCONNECTED_ICON;
         this._indicator.visible = connected;
-        this._toggle.updateStatus(connected, data);
+        this._toggle.updateStatus(status);
     }
 
     destroy() {
@@ -159,6 +198,7 @@ export default class PangolinStatusExtension extends Extension {
         this._rapidSource = null;
         this._pollInFlight = false;
         this._rapidAttempts = 0;
+        this._auth = null;
 
         this._indicator = new PangolinIndicator(this);
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
@@ -184,6 +224,27 @@ export default class PangolinStatusExtension extends Extension {
     async getStatus() {
         return interpretStatus(
             await execAsync([PANGOLIN_BINARY, 'status', '--json'], this._cancellable));
+    }
+
+    /**
+     * Query `pangolin auth status`; resolves with {loggedIn, serverUrl, user}.
+     * Rejects only on spawn failure or cancellation.
+     */
+    async getAuthStatus() {
+        return parseAuthStatus(
+            await execAsync([PANGOLIN_BINARY, 'auth', 'status'], this._cancellable));
+    }
+
+    /**
+     * Combined status: tunnel state plus the last known auth snapshot.
+     * The auth probe is only refreshed during full polls; rapid ticks reuse
+     * the cache so connecting stays snappy.
+     */
+    async _fetchStatus() {
+        const auth = await this.getAuthStatus().catch(() => null);
+        if (auth !== null)
+            this._auth = auth;
+        return {...(await this.getStatus()), auth: this._auth};
     }
 
     /** Run `argv` detached; resolves true on exit status 0. */
@@ -236,7 +297,7 @@ export default class PangolinStatusExtension extends Extension {
             if (this._cancellable === null)
                 return; // disabled while the request was in flight
             if (status.connected || this._rapidAttempts >= RAPID_POLL_MAX_ATTEMPTS) {
-                this.applyStatus(status);
+                this.applyStatus({...status, auth: this._auth});
                 return;
             }
             this._scheduleRapidTick(); // keep the attempt count; do not reset it
@@ -257,7 +318,7 @@ export default class PangolinStatusExtension extends Extension {
             return;
 
         this._pollInFlight = true;
-        this.getStatus()
+        this._fetchStatus()
             .then(status => this.applyStatus(status))
             .catch(() => {})
             .finally(() => {

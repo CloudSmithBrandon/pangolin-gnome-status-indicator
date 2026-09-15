@@ -9,7 +9,7 @@ import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import System from 'system';
 
-import {execAsync, interpretStatus} from '../status.js';
+import {execAsync, interpretStatus, parseAuthStatus, shortHost, summarizePeers} from '../status.js';
 
 let failures = 0;
 function check(name, cond, extra = '') {
@@ -110,6 +110,54 @@ function check(name, cond, extra = '') {
     }
 }
 
+
+// 5. Auth status parsing (hermetic, mirrors real CLI output shape)
+{
+    const sample = [
+        'Status: logged in',
+        '@ https://pangolin.example.com',
+        '',
+        'User: me@example.com',
+        'User ID: abc123',
+        'Org ID: homelab',
+        '',
+        'Licensed for personal use only.',
+    ].join('\n');
+    const r = parseAuthStatus({ok: true, stdout: sample});
+    check('parses logged-in auth status',
+        r.loggedIn === true && r.serverUrl === 'https://pangolin.example.com' && r.user === 'me@example.com');
+}
+{
+    const r = parseAuthStatus({ok: false, stdout: 'Error: not logged in'});
+    check('failed auth status means not signed in', r.loggedIn === false && r.serverUrl === null);
+}
+{
+    const r = parseAuthStatus({ok: true, stdout: 'Status: logged out\n'});
+    check('logged-out text means not signed in', r.loggedIn === false);
+}
+
+// 6. Peer summarization (hermetic, mirrors real status --json shape)
+{
+    const data = {
+        peers: {
+            '2': {name: 'home', connected: true, rtt: 5, isRelay: true},
+            '3': {name: 'work', connected: false, rtt: 0, isRelay: false},
+        },
+        networkSettings: {ipv4_addresses: ['100.90.128.0']},
+    };
+    const s = summarizePeers(data);
+    check('summarizes sites', s.sites.length === 2 && s.sites[0].name === 'home'
+        && s.sites[0].connected === true && s.sites[0].rtt === 5 && s.sites[0].isRelay === true);
+    check('summarizes tunnel ips', s.tunnelIps.length === 1 && s.tunnelIps[0] === '100.90.128.0');
+}
+{
+    const s = summarizePeers(null);
+    check('null data summarizes empty', s.sites.length === 0 && s.tunnelIps.length === 0);
+}
+{
+    check('shortHost strips scheme and slash',
+        shortHost('https://pangolin.example.com') === 'pangolin.example.com' && shortHost(null) === null);
+}
 if (failures > 0) {
     printerr(`${failures} test(s) failed`);
     System.exit(1);

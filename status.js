@@ -63,3 +63,41 @@ export function interpretStatus({ok, stdout}) {
         return {connected: text.includes('running') || text.includes('connected'), data: null};
     }
 }
+
+/**
+ * Parse `pangolin auth status` (human-readable) output.
+ * Returns `{loggedIn, serverUrl, user}`; `serverUrl`/`user` may be null.
+ */
+export function parseAuthStatus({ok, stdout}) {
+    if (!ok || !stdout)
+        return {loggedIn: false, serverUrl: null, user: null};
+
+    const urlMatch = stdout.match(/^@\s+(\S+)\s*$/m);
+    const userMatch = stdout.match(/^User:\s+(\S+)\s*$/m);
+    return {
+        loggedIn: /^Status:\s*logged in/m.test(stdout),
+        serverUrl: urlMatch ? urlMatch[1] : null,
+        user: userMatch ? userMatch[1] : null,
+    };
+}
+
+/**
+ * Extract display-friendly facts from parsed `status --json` data.
+ * Returns `{sites, tunnelIps}` where each site is
+ * `{name, connected, rtt, isRelay}`.
+ */
+export function summarizePeers(data) {
+    const sites = Object.values(data?.peers ?? {}).map(p => ({
+        name: String(p.name ?? 'unknown'),
+        connected: p.connected === true,
+        rtt: Number.isFinite(p.rtt) ? p.rtt : null,
+        isRelay: p.isRelay === true,
+    }));
+    const tunnelIps = (data?.networkSettings?.ipv4_addresses ?? []).map(String);
+    return {sites, tunnelIps};
+}
+
+/** Strip scheme and trailing slash from a server URL for display. */
+export function shortHost(serverUrl) {
+    return serverUrl ? serverUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '') : null;
+}
