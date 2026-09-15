@@ -10,6 +10,7 @@ mkdir -p "${INSTALL_DIR}"
 
 cp metadata.json "${INSTALL_DIR}/"
 cp extension.js "${INSTALL_DIR}/"
+cp status.js "${INSTALL_DIR}/"
 cp stylesheet.css "${INSTALL_DIR}/"
 cp askpass.sh "${INSTALL_DIR}/"
 chmod +x "${INSTALL_DIR}/askpass.sh"

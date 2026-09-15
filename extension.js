@@ -1,30 +1,45 @@
+// Pangolin VPN Status — GNOME Shell quick settings indicator.
+//
+// Fork of arminwinkt/pangolin-gnome-status-indicator with fully asynchronous
+// subprocess handling (Gio.Subprocess instead of GLib.spawn_command_line_sync),
+// tracked timer sources, and cancellation on disable, so the shell never
+// blocks on a status poll.
+
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
-import St from 'gi://St';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as QuickSettings from 'resource:///org/gnome/shell/ui/quickSettings.js';
 
+import {
+    CONNECTED_ICON,
+    CONNECTING_ICON,
+    DISCONNECTED_ICON,
+    execAsync,
+    interpretStatus,
+} from './status.js';
+
 const PANGOLIN_BINARY = 'pangolin';
 const STATUS_POLL_INTERVAL = 30;
+const RAPID_POLL_INTERVAL = 2;
+const RAPID_POLL_MAX_ATTEMPTS = 15;
 
 const PangolinToggle = GObject.registerClass(
 class PangolinToggle extends QuickSettings.QuickMenuToggle {
     _init(extension) {
         super._init({
             title: 'Pangolin VPN',
-            iconName: 'network-vpn-symbolic',
+            iconName: DISCONNECTED_ICON,
             toggleMode: true,
         });
 
         this._extension = extension;
         this._connected = false;
-        this._statusDetails = null;
 
-        this.menu.setHeader('network-vpn-symbolic', 'Pangolin VPN', 'Disconnected');
+        this.menu.setHeader(DISCONNECTED_ICON, 'Pangolin VPN', 'Disconnected');
 
         this._statusSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._statusSection);
@@ -32,80 +47,57 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         this.menu.addAction('Open Logs', () => {
-            this._spawnCommand(['ptyxis', '--', PANGOLIN_BINARY, 'logs']);
+            this._extension.runCommand(['ptyxis', '--', PANGOLIN_BINARY, 'logs']);
         });
 
         this.connect('clicked', () => this._onToggle());
     }
 
     _onToggle() {
-        if (this._connected) {
+        if (this._connected)
             this._disconnect();
-        } else {
+        else
             this._connect();
-        }
     }
 
     _connect() {
         this._setStatusConnecting();
-        this._spawnCommand([PANGOLIN_BINARY, 'up', '--silent'], (success) => {
-            if (success) {
-                this._pollStatus();
-            } else {
-                this._spawnWithSudo([PANGOLIN_BINARY, 'up'], () => {
-                    this._rapidPoll();
-                });
-            }
-        });
+
+        this._extension.runCommand([PANGOLIN_BINARY, 'up', '--silent'])
+            .then(ok => {
+                if (ok)
+                    return this._extension.requestRapidPoll();
+                // Creating the TUN device needs root; fall back to sudo -A,
+                // which prompts via SUDO_ASKPASS (zenity).
+                return this._extension.runCommand([PANGOLIN_BINARY, 'up'], {sudo: true})
+                    .then(() => this._extension.requestRapidPoll());
+            })
+            .catch(() => {});
     }
 
     _disconnect() {
         this._setStatusConnecting();
-        this._spawnCommand([PANGOLIN_BINARY, 'down'], () => {
-            this._rapidPoll();
-        });
-    }
 
-    _rapidPoll() {
-        let attempts = 0;
-        const maxAttempts = 15;
-        GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 2, () => {
-            attempts++;
-            try {
-                const [, stdout, , exitStatus] = GLib.spawn_command_line_sync(
-                    `${PANGOLIN_BINARY} status --json`
-                );
-                const output = new TextDecoder().decode(stdout).trim();
-                if (exitStatus === 0 && output && !output.includes('No client is currently running')) {
-                    this._extension._indicator._pollStatus();
-                    return GLib.SOURCE_REMOVE;
-                }
-            } catch {}
-            if (attempts >= maxAttempts) {
-                this._extension._indicator._pollStatus();
-                return GLib.SOURCE_REMOVE;
-            }
-            return GLib.SOURCE_CONTINUE;
-        });
+        this._extension.runCommand([PANGOLIN_BINARY, 'down'])
+            .then(() => this._extension.requestRapidPoll())
+            .catch(() => {});
     }
 
     _setStatusConnecting() {
         this._connected = false;
         this.checked = false;
-        this.menu.setHeader('network-vpn-acquiring-symbolic', 'Pangolin VPN', 'Connecting...');
+        this.menu.setHeader(CONNECTING_ICON, 'Pangolin VPN', 'Connecting...');
         this._updateStatusSection(null);
     }
 
     updateStatus(connected, details) {
         this._connected = connected;
-        this._statusDetails = details;
         this.checked = connected;
 
-        if (connected) {
-            this.menu.setHeader('network-vpn-symbolic', 'Pangolin VPN', 'Connected');
-        } else {
-            this.menu.setHeader('network-vpn-no-route-symbolic', 'Pangolin VPN', 'Disconnected');
-        }
+        if (connected)
+            this.menu.setHeader(CONNECTED_ICON, 'Pangolin VPN', 'Connected');
+        else
+            this.menu.setHeader(DISCONNECTED_ICON, 'Pangolin VPN', 'Disconnected');
 
         this._updateStatusSection(details);
     }
@@ -113,64 +105,14 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
     _updateStatusSection(details) {
         this._statusSection.removeAll();
 
-        if (details) {
-            for (const [key, value] of Object.entries(details)) {
-                if (value && typeof value === 'string') {
-                    const item = new PopupMenu.PopupMenuItem(`${key}: ${value}`, {
-                        reactive: false,
-                    });
-                    this._statusSection.addMenuItem(item);
-                }
+        if (!details)
+            return;
+
+        for (const [key, value] of Object.entries(details)) {
+            if (value && typeof value === 'string') {
+                this._statusSection.addMenuItem(new PopupMenu.PopupMenuItem(
+                    `${key}: ${value}`, {reactive: false}));
             }
-        }
-    }
-
-    _spawnWithSudo(argv, callback) {
-        const askpassPath = GLib.build_filenamev([
-            this._extension.path, 'askpass.sh']);
-        const envp = GLib.get_environ();
-        envp.push(`SUDO_ASKPASS=${askpassPath}`);
-
-        try {
-            const [, pid] = GLib.spawn_async(
-                null,
-                ['sudo', '-A', ...argv],
-                envp,
-                GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
-                null
-            );
-
-            GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, (pid, waitStatus) => {
-                GLib.spawn_close_pid(pid);
-                let success = false;
-                try { success = GLib.spawn_check_exit_status(waitStatus); } catch {}
-                if (callback) callback(success);
-            });
-        } catch (e) {
-            log(`Pangolin extension: sudo command failed: ${e.message}`);
-            if (callback) callback(false);
-        }
-    }
-
-    _spawnCommand(argv, callback) {
-        try {
-            const [, pid] = GLib.spawn_async(
-                null,
-                argv,
-                null,
-                GLib.SpawnFlags.SEARCH_PATH | GLib.SpawnFlags.DO_NOT_REAP_CHILD,
-                null
-            );
-
-            GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, (pid, waitStatus) => {
-                GLib.spawn_close_pid(pid);
-                let success = false;
-                try { success = GLib.spawn_check_exit_status(waitStatus); } catch {}
-                if (callback) callback(success);
-            });
-        } catch (e) {
-            log(`Pangolin extension: command failed: ${e.message}`);
-            if (callback) callback(false);
         }
     }
 });
@@ -180,82 +122,20 @@ class PangolinIndicator extends QuickSettings.SystemIndicator {
     _init(extension) {
         super._init();
 
-        this._extension = extension;
         this._indicator = this._addIndicator();
-        this._indicator.icon_name = 'network-vpn-no-route-symbolic';
+        this._indicator.icon_name = DISCONNECTED_ICON;
 
         this._toggle = new PangolinToggle(extension);
         this.quickSettingsItems.push(this._toggle);
-
-        this._pollSource = null;
-        this._startPolling();
     }
 
-    _startPolling() {
-        this._pollStatus();
-
-        this._pollSource = GLib.timeout_add_seconds(
-            GLib.PRIORITY_DEFAULT,
-            STATUS_POLL_INTERVAL,
-            () => {
-                this._pollStatus();
-                return GLib.SOURCE_CONTINUE;
-            }
-        );
-    }
-
-    _pollStatus() {
-        try {
-            const [, stdout, , exitStatus] = GLib.spawn_command_line_sync(
-                `${PANGOLIN_BINARY} status --json`
-            );
-
-            const decoder = new TextDecoder();
-            const output = decoder.decode(stdout).trim();
-
-            if (!output || exitStatus !== 0) {
-                this._updateFromStatus(false, null);
-                return;
-            }
-
-            if (output.includes('No client is currently running')) {
-                this._updateFromStatus(false, null);
-                return;
-            }
-
-            try {
-                const data = JSON.parse(output);
-                this._updateFromStatus(true, data);
-            } catch {
-                if (output.toLowerCase().includes('running') ||
-                    output.toLowerCase().includes('connected')) {
-                    this._updateFromStatus(true, null);
-                } else {
-                    this._updateFromStatus(false, null);
-                }
-            }
-        } catch (e) {
-            this._updateFromStatus(false, null);
-        }
-    }
-
-    _updateFromStatus(connected, details) {
-        if (connected) {
-            this._indicator.icon_name = 'network-vpn-symbolic';
-            this._indicator.visible = true;
-        } else {
-            this._indicator.visible = false;
-        }
-
-        this._toggle.updateStatus(connected, details);
+    applyStatus({connected, data}) {
+        this._indicator.icon_name = connected ? CONNECTED_ICON : DISCONNECTED_ICON;
+        this._indicator.visible = connected;
+        this._toggle.updateStatus(connected, data);
     }
 
     destroy() {
-        if (this._pollSource) {
-            GLib.source_remove(this._pollSource);
-            this._pollSource = null;
-        }
-
         this.quickSettingsItems.forEach(item => item.destroy());
         super.destroy();
     }
@@ -263,12 +143,121 @@ class PangolinIndicator extends QuickSettings.SystemIndicator {
 
 export default class PangolinStatusExtension extends Extension {
     enable() {
+        this._cancellable = new Gio.Cancellable();
+        this._pollSource = null;
+        this._rapidSource = null;
+        this._pollInFlight = false;
+        this._rapidAttempts = 0;
+
         this._indicator = new PangolinIndicator(this);
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
+
+        this._startPolling();
     }
 
     disable() {
+        this._cancellable?.cancel();
+        this._cancellable = null;
+
+        this._removeSource('_pollSource');
+        this._removeSource('_rapidSource');
+
         this._indicator?.destroy();
         this._indicator = null;
+    }
+
+    /**
+     * Query `pangolin status --json`; resolves with {connected, data}.
+     * Rejects only on spawn failure or cancellation.
+     */
+    async getStatus() {
+        return interpretStatus(
+            await execAsync([PANGOLIN_BINARY, 'status', '--json'], this._cancellable));
+    }
+
+    /** Run `argv` detached; resolves true on exit status 0. */
+    runCommand(argv, {sudo = false} = {}) {
+        const finalArgv = sudo ? ['sudo', '-A', ...argv] : argv;
+        try {
+            const launcher = new Gio.SubprocessLauncher();
+            if (sudo)
+                launcher.setenv('SUDO_ASKPASS', GLib.build_filenamev([this.path, 'askpass.sh']), true);
+
+            const proc = launcher.spawnv(finalArgv);
+            return new Promise(resolve => {
+                proc.wait_check_async(this._cancellable, (p, res) => {
+                    try {
+                        resolve(p.wait_check_finish(res));
+                    } catch {
+                        resolve(false);
+                    }
+                });
+            });
+        } catch (e) {
+            log(`pangolin-indicator: failed to run ${finalArgv.join(' ')}: ${e.message}`);
+            return Promise.resolve(false);
+        }
+    }
+
+    /**
+     * Poll every RAPID_POLL_INTERVAL seconds until the status settles
+     * (used right after up/down), bounded by RAPID_POLL_MAX_ATTEMPTS.
+     */
+    requestRapidPoll() {
+        this._removeSource('_rapidSource');
+        this._rapidAttempts = 0;
+
+        this._rapidSource = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, RAPID_POLL_INTERVAL, () => {
+            this._rapidSource = null;
+            this._rapidTick();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _rapidTick() {
+        this._rapidAttempts++;
+
+        this.getStatus().then(status => {
+            if (this._cancellable === null)
+                return; // disabled while the request was in flight
+            if (status.connected || this._rapidAttempts >= RAPID_POLL_MAX_ATTEMPTS) {
+                this.applyStatus(status);
+                return;
+            }
+            this.requestRapidPoll();
+        }).catch(() => {});
+    }
+
+    _startPolling() {
+        this._poll();
+
+        this._pollSource = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, STATUS_POLL_INTERVAL, () => {
+            this._poll();
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    _poll() {
+        if (this._pollInFlight)
+            return;
+
+        this._pollInFlight = true;
+        this.getStatus()
+            .then(status => this.applyStatus(status))
+            .catch(() => {})
+            .finally(() => {
+                this._pollInFlight = false;
+            });
+    }
+
+    applyStatus(status) {
+        this._indicator?.applyStatus(status);
+    }
+
+    _removeSource(field) {
+        if (this[field]) {
+            GLib.source_remove(this[field]);
+            this[field] = null;
+        }
     }
 }
