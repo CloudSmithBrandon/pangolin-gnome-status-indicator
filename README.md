@@ -22,8 +22,9 @@ Fork of
 - Connect attempts are guarded against double-clicks, and the rapid poll that
   follows up/down is genuinely bounded — a failed connect can no longer spin
   a 2-second poll loop indefinitely.
-- Updates to an already-activated extension apply live through the shell's
-  `ReloadExtension` D-Bus method — no restart needed after the first install.
+- Installer is honest about GNOME's session-start code loading: one
+  logout/login activates, the same rule GNOME's own EGO updates follow on
+  Wayland.
 - Subprocess/status helpers live in `status.js` with no Shell imports, so
   they are unit-testable outside the shell.
 
@@ -38,12 +39,14 @@ removed the `InstallBundle` D-Bus method, so the **first** activation needs
 one logout/login. `install.sh` copies the files, marks the extension enabled,
 and tells you when that is the case.
 
-Once the shell knows the extension, re-running `install.sh` reloads it live
-(`ReloadExtension`) — no logout needed. `./uninstall.sh` removes it live too.
-
-Note: extensions installed from extensions.gnome.org load live because the
-shell downloads and registers them in one step (`InstallRemoteExtension`);
-that service only accepts extensions published on the EGO site.
+Code updates are the same: GNOME imports extension code once per session, so
+re-running `install.sh` after a change also needs one logout (on X11,
+`Alt+F2 → r` suffices). This is not a limitation of this fork — GNOME's own
+extension updates on Wayland prompt for a shell restart. Extensions from
+extensions.gnome.org appear live only because `InstallRemoteExtension`
+downloads and registers them in the same step; it accepts nothing that is
+not published on EGO (GNOME 50 removed the local `InstallBundle` method,
+and `ReloadExtension` is unimplemented on 50.1).
 
 ## Uninstall
 

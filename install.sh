@@ -23,22 +23,15 @@ if command -v gsettings &>/dev/null; then
     fi
 fi
 
-# GNOME Shell only scans the extensions directory at startup, so a shell that
-# has never seen this extension cannot load it now (GNOME 50 removed the
-# InstallBundle D-Bus method that allowed this). One logout is unavoidable for
-# the first activation. Afterwards, updates apply live via ReloadExtension.
+# GNOME Shell scans the extensions directory once, at session start, and
+# imports extension code exactly once per session: neither newly-installed
+# nor updated code is picked up by a running session. This matches GNOME's
+# own behavior on Wayland, where even EGO updates prompt for a shell restart.
+echo ""
+echo "Installed to ${INSTALL_DIR}"
 if gnome-extensions list 2>/dev/null | grep -q "^${EXTENSION_UUID}$"; then
-    gnome-extensions disable "${EXTENSION_UUID}" 2>/dev/null || true
-    gdbus call --session \
-        --dest org.gnome.Shell.Extensions \
-        --object-path /org/gnome/Shell/Extensions \
-        --method org.gnome.Shell.Extensions.ReloadExtension "${EXTENSION_UUID}" >/dev/null
-    gnome-extensions enable "${EXTENSION_UUID}" 2>/dev/null || true
-    echo ""
-    echo "Updated and reloaded — the running session is using the new code."
+    echo "The running session has an older copy loaded."
+    echo "Log out and back in (Wayland) or Alt+F2 → r (X11) to apply the update."
 else
-    echo ""
-    echo "Installed to ${INSTALL_DIR}"
     echo "Log out and back in once to activate it."
-    echo "(After that, future installs apply live without logging out.)"
 fi
