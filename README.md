@@ -3,10 +3,24 @@
 A GNOME Shell extension that adds a status indicator and quick toggle for the
 [Pangolin](https://github.com/fosrl/pangolin) VPN client. Shows connection
 status in the system panel and provides connect/disconnect controls from the
-quick settings menu.
+quick settings menu, plus a full settings window.
 
 Fork of
 [arminwinkt/pangolin-gnome-status-indicator](https://github.com/arminwinkt/pangolin-gnome-status-indicator).
+
+## Features
+
+- Connection status in the panel and quick settings, with server and site
+  details in the tile menu
+- Connect/disconnect from the quick settings tile
+- **Settings window** (gear entry in the tile menu) covering the CLI's
+  tunnel flags: auto-connect at login, interface name, upstream DNS,
+  DNS override, local-route preference, direct connections, MTU, log level
+  and tunnel domains — every setting with plain-language help text
+- **Auto-connect at login** (off/on in settings)
+- **Update check** for the Pangolin CLI against the official releases, with
+  a one-press install that runs in a visible terminal
+- View Logs opens a live-following log stream in Ptyxis
 
 ## Changes in this fork
 
@@ -36,17 +50,35 @@ Fork of
 
 GNOME Shell only scans the extensions directory at startup, and GNOME 50
 removed the `InstallBundle` D-Bus method, so the **first** activation needs
-one logout/login. `install.sh` copies the files, marks the extension enabled,
-and tells you when that is the case.
-
+one logout/login. `install.sh` copies the files (compiling the GSettings
+schema), marks the extension enabled, and tells you when that is the case.
 Code updates are the same: GNOME imports extension code once per session, so
 re-running `install.sh` after a change also needs one logout (on X11,
-`Alt+F2 → r` suffices). This is not a limitation of this fork — GNOME's own
-extension updates on Wayland prompt for a shell restart. Extensions from
-extensions.gnome.org appear live only because `InstallRemoteExtension`
-downloads and registers them in the same step; it accepts nothing that is
-not published on EGO (GNOME 50 removed the local `InstallBundle` method,
-and `ReloadExtension` is unimplemented on 50.1).
+`Alt+F2 → r` suffices).
+
+### One-time system setup
+
+Creating the tunnel's TUN device requires root. Give the Pangolin binary the
+needed capability once, and the extension can connect unprivileged — silently,
+including auto-connect at login:
+
+```bash
+sudo setcap cap_net_admin+ep /usr/local/bin/pangolin
+```
+
+If you previously ran the Pangolin CLI as an unattended systemd service
+(e.g. `pangolin-cli.service`), remove it so it stops fighting the extension
+over the tunnel state:
+
+```bash
+sudo systemctl disable --now pangolin-cli.service && \
+  sudo rm /etc/systemd/system/pangolin-cli.service
+```
+
+`install.sh` detects both conditions and prints these commands for you.
+
+Without the capability, connecting falls back to `sudo -A` with a graphical
+password prompt (zenity), which also works.
 
 ## Uninstall
 
@@ -59,13 +91,15 @@ and `ReloadExtension` is unimplemented on 50.1).
 - GNOME Shell 45+ (tested on 50.1)
 - [Pangolin](https://github.com/fosrl/pangolin) VPN client installed and in
   your `PATH`
-- `sudo` and `zenity` (graphical password prompt when connecting — creating
-  the TUN device requires root)
-- `ptyxis` (for the "Open Logs" action)
+- `glib-compile-schemas` (present on GNOME systems; compiles the settings
+  schema at install time)
+- `sudo` and `zenity` (only needed if you skip the setcap step above)
+- `ptyxis` (for the "View Logs" action)
 
 ## Tests
 
-Unit tests for the subprocess/status helpers (run outside the shell):
+Unit tests for the subprocess/status/argument-builder helpers (run outside
+the shell):
 
 ```bash
 gjs -m test/status-test.mjs
@@ -75,9 +109,11 @@ Integration check in a sandboxed headless Shell:
 
 ```bash
 TEST=$(mktemp -d)
-mkdir -p "$TEST/data/gnome-shell/extensions/pangolin-indicator@yetanother.at" "$TEST/config"
-cp metadata.json extension.js status.js stylesheet.css askpass.sh \
+mkdir -p "$TEST/data/gnome-shell/extensions/pangolin-indicator@yetanother.at/schemas" "$TEST/config"
+cp metadata.json extension.js prefs.js status.js askpass.sh \
   "$TEST/data/gnome-shell/extensions/pangolin-indicator@yetanother.at/"
+cp schemas/*.gschema.xml "$TEST/data/gnome-shell/extensions/pangolin-indicator@yetanother.at/schemas/"
+glib-compile-schemas "$TEST/data/gnome-shell/extensions/pangolin-indicator@yetanother.at/schemas/"
 export XDG_DATA_HOME="$TEST/data" XDG_CONFIG_HOME="$TEST/config"
 dbus-run-session -- bash -c \
   "gsettings set org.gnome.shell enabled-extensions \"['pangolin-indicator@yetanother.at']\" && \

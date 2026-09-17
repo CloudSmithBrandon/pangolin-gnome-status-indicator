@@ -101,3 +101,45 @@ export function summarizePeers(data) {
 export function shortHost(serverUrl) {
     return serverUrl ? serverUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '') : null;
 }
+
+/**
+ * Build the `pangolin up` argument list from settings values.
+ * `s` carries the GSettings-shaped fields:
+ *   {interfaceName, mtu, logLevel, upstreamDns, overrideDns,
+ *    preferLocalRoutes, holepunch, matchDomains}
+ */
+export function buildUpArgs(s) {
+    const argv = ['pangolin', 'up', '--silent'];
+
+    if (s.interfaceName)
+        argv.push('--interface-name', s.interfaceName);
+    argv.push('--mtu', String(s.mtu));
+    argv.push('--log-level', s.logLevel);
+    if (s.upstreamDns)
+        argv.push('--upstream-dns', s.upstreamDns);
+    argv.push('--override-dns', s.overrideDns ? 'true' : 'false');
+    argv.push('--prefer-local-routes', s.preferLocalRoutes ? 'true' : 'false');
+    argv.push('--holepunch', s.holepunch ? 'true' : 'false');
+    if (s.matchDomains)
+        argv.push('--match-domains', s.matchDomains);
+
+    return argv;
+}
+
+/**
+ * Compare two dotted version strings ("0.16.0", "v1.2").
+ * Returns <0 if a < b, 0 if equal, >0 if a > b.
+ * A leading "v" is ignored; missing components count as 0.
+ */
+export function compareVersions(a, b) {
+    const norm = v => v.replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+    const va = norm(a);
+    const vb = norm(b);
+    const len = Math.max(va.length, vb.length);
+    for (let i = 0; i < len; i++) {
+        const d = (va[i] || 0) - (vb[i] || 0);
+        if (d !== 0)
+            return d;
+    }
+    return 0;
+}

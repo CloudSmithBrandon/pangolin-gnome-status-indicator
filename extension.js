@@ -18,6 +18,8 @@ import {
     CONNECTED_ICON,
     CONNECTING_ICON,
     DISCONNECTED_ICON,
+    buildUpArgs,
+    compareVersions,
     execAsync,
     interpretStatus,
     parseAuthStatus,
@@ -29,6 +31,9 @@ const PANGOLIN_BINARY = 'pangolin';
 const STATUS_POLL_INTERVAL = 30;
 const RAPID_POLL_INTERVAL = 2;
 const RAPID_POLL_MAX_ATTEMPTS = 15;
+const AUTOCONNECT_DELAY = 10;
+const UPDATE_CHECK_DELAY = 20;
+const CLI_RELEASES_URL = 'https://api.github.com/repos/fosrl/cli/releases/latest';
 
 const PangolinToggle = GObject.registerClass(
 class PangolinToggle extends QuickSettings.QuickMenuToggle {
@@ -50,8 +55,8 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        this.menu.addAction('Open Logs', () => {
-            this._extension.runCommand(['ptyxis', '--', PANGOLIN_BINARY, 'logs']);
+        this.menu.addAction('View Logs', () => {
+            this._extension.runCommand(['ptyxis', '--', PANGOLIN_BINARY, 'logs', 'client']);
         });
 
         this._signInItem = this.menu.addAction('Sign In…', () => {
@@ -59,11 +64,16 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         });
         this._signInItem.visible = false;
 
+        this.menu.addAction('Settings…', () => {
+            this.menu.close();
+            Main.extensionManager.openExtensionPrefs(this._extension.uuid, this._extension.metadata.name, {});
+        }, 'emblem-system-symbolic');
+
         this.connect('clicked', () => this._onToggle());
     }
 
     _onToggle() {
-        if (this._busy)
+        if (this._busy || this._extension.isTunnelBusy())
             return;
         if (this._connected)
             this._disconnect();
@@ -75,14 +85,12 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this._busy = true;
         this._setStatusConnecting();
 
-        this._extension.runCommand([PANGOLIN_BINARY, 'up', '--silent'])
+        // Settings-built argv; falls back to sudo -A (zenity askpass) when
+        // the tunnel cannot be created unprivileged.
+        this._extension.startTunnel()
             .then(ok => {
                 if (ok)
-                    return this._extension.requestRapidPoll();
-                // Creating the TUN device needs root; fall back to sudo -A,
-                // which prompts via SUDO_ASKPASS (zenity).
-                return this._extension.runCommand([PANGOLIN_BINARY, 'up'], {sudo: true})
-                    .then(() => this._extension.requestRapidPoll());
+                    this._extension.requestRapidPoll();
             })
             .catch(() => {})
             .finally(() => {
@@ -91,15 +99,12 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
     }
 
     _disconnect() {
-        this._busy = true;
         this._setStatusConnecting();
 
-        this._extension.runCommand([PANGOLIN_BINARY, 'down'])
+        this._extension.stopTunnel()
             .then(() => this._extension.requestRapidPoll())
             .catch(() => {})
-            .finally(() => {
-                this._busy = false;
-            });
+            .finally(() => {});
     }
 
     _setStatusConnecting() {
@@ -196,14 +201,135 @@ export default class PangolinStatusExtension extends Extension {
         this._cancellable = new Gio.Cancellable();
         this._pollSource = null;
         this._rapidSource = null;
+        this._autoConnectSource = null;
+        this._updateSource = null;
         this._pollInFlight = false;
         this._rapidAttempts = 0;
         this._auth = null;
+        this._tunnelBusy = false;
+        this._settings = this.getSettings();
 
         this._indicator = new PangolinIndicator(this);
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
 
         this._startPolling();
+
+        if (this._settings.get_boolean('autoconnect')) {
+            this._autoConnectSource = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, AUTOCONNECT_DELAY, () => {
+                this._autoConnectSource = null;
+                this._autoConnect();
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+
+        if (this._settings.get_boolean('check-updates-at-login')) {
+            this._updateSource = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, UPDATE_CHECK_DELAY, () => {
+                this._updateSource = null;
+                this.checkForUpdates(true).catch(() => {});
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+    }
+
+    disable() {
+        this._cancellable?.cancel();
+        this._cancellable = null;
+
+        this._removeSource('_pollSource');
+        this._removeSource('_rapidSource');
+        this._removeSource('_autoConnectSource');
+        this._removeSource('_updateSource');
+
+        this._indicator?.destroy();
+        this._indicator = null;
+    }
+
+    /** Build the `pangolin up` argv from the current GSettings values. */
+    getUpArgs() {
+        const s = this._settings;
+        return buildUpArgs({
+            interfaceName: s.get_string('interface-name'),
+            mtu: s.get_int('mtu'),
+            logLevel: s.get_string('log-level'),
+            upstreamDns: s.get_string('upstream-dns'),
+            overrideDns: s.get_boolean('override-dns'),
+            preferLocalRoutes: s.get_boolean('prefer-local-routes'),
+            holepunch: s.get_boolean('holepunch'),
+            matchDomains: s.get_string('match-domains'),
+        });
+    }
+
+    isTunnelBusy() {
+        return this._tunnelBusy === true;
+    }
+
+    /**
+     * Start the tunnel with the configured flags. Tries unprivileged first
+     * (works once the binary has the needed file capabilities) and falls
+     * back to sudo -A (zenity askpass) when the TUN device cannot be created.
+     */
+    startTunnel() {
+        if (this._tunnelBusy)
+            return Promise.resolve(false);
+        this._tunnelBusy = true;
+
+        return this.runCommand(this.getUpArgs())
+            .then(ok => ok ? true : this.runCommand([PANGOLIN_BINARY, 'up'], {sudo: true}))
+            .finally(() => {
+                this._tunnelBusy = false;
+            });
+    }
+
+    /** Stop the tunnel; the control socket allows this unprivileged. */
+    stopTunnel() {
+        if (this._tunnelBusy)
+            return Promise.resolve(false);
+        this._tunnelBusy = true;
+
+        return this.runCommand([PANGOLIN_BINARY, 'down'])
+            .finally(() => {
+                this._tunnelBusy = false;
+            });
+    }
+
+    _autoConnect() {
+        if (this._tunnelBusy || this._cancellable === null)
+            return;
+
+        this.getStatus().then(status => {
+            if (this._cancellable === null || status.connected)
+                return;
+            this.startTunnel()
+                .then(ok => {
+                    if (ok)
+                        this.requestRapidPoll();
+                })
+                .catch(() => {});
+        }).catch(() => {});
+    }
+
+    /**
+     * Compare the installed CLI with the latest GitHub release.
+     * Resolves {local, remote, updateAvailable}; remote is null when the
+     * release check could not be completed.
+     */
+    checkForUpdates(notifyWhenAvailable) {
+        const localP = execAsync([PANGOLIN_BINARY, 'version'], this._cancellable)
+            .then(r => r.stdout.trim());
+        const remoteP = execAsync(['curl', '-s', '-m', '15', CLI_RELEASES_URL], this._cancellable)
+            .then(r => JSON.parse(r.stdout).tag_name)
+            .catch(() => null);
+
+        return Promise.all([localP, remoteP]).then(([local, remote]) => {
+            if (remote === null)
+                return {local, remote: null, updateAvailable: false};
+
+            this._settings?.set_string('last-remote-version', remote);
+            const updateAvailable = compareVersions(remote, local) > 0;
+            if (updateAvailable && notifyWhenAvailable)
+                Main.notify('Pangolin CLI update available', `Version ${remote} is ready to install — open Pangolin settings.`);
+            return {local, remote, updateAvailable};
+        });
     }
 
     disable() {

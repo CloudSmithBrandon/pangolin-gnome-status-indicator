@@ -1,15 +1,15 @@
 #!/usr/bin/env gjs
 // Unit tests for status.js — run with: gjs -m test/status-test.mjs
 //
-// Tests 1–3 are hermetic; test 4 exercises the real pangolin binary when
-// available (informational shape check only, so the suite stays
+// Sections 1–3 and 5–8 are hermetic; section 4 exercises the real pangolin
+// binary when available (informational shape check only, so the suite stays
 // deterministic regardless of tunnel state). Exits non-zero on failure.
 
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import System from 'system';
 
-import {execAsync, interpretStatus, parseAuthStatus, shortHost, summarizePeers} from '../status.js';
+import {buildUpArgs, compareVersions, execAsync, interpretStatus, parseAuthStatus, shortHost, summarizePeers} from '../status.js';
 
 let failures = 0;
 function check(name, cond, extra = '') {
@@ -110,7 +110,6 @@ function check(name, cond, extra = '') {
     }
 }
 
-
 // 5. Auth status parsing (hermetic, mirrors real CLI output shape)
 {
     const sample = [
@@ -158,6 +157,46 @@ function check(name, cond, extra = '') {
     check('shortHost strips scheme and slash',
         shortHost('https://pangolin.example.com') === 'pangolin.example.com' && shortHost(null) === null);
 }
+
+// 7. CLI argument building (hermetic)
+{
+    const argv = buildUpArgs({
+        interfaceName: 'pangolin0', mtu: 1400, logLevel: 'debug', upstreamDns: '9.9.9.9',
+        overrideDns: false, preferLocalRoutes: true, holepunch: false, matchDomains: '*.proxy.internal',
+    });
+    check('buildUpArgs emits configured flags',
+        JSON.stringify(argv) === JSON.stringify([
+            'pangolin', 'up', '--silent',
+            '--interface-name', 'pangolin0',
+            '--mtu', '1400',
+            '--log-level', 'debug',
+            '--upstream-dns', '9.9.9.9',
+            '--override-dns', 'false',
+            '--prefer-local-routes', 'true',
+            '--holepunch', 'false',
+            '--match-domains', '*.proxy.internal',
+        ]));
+}
+{
+    const argv = buildUpArgs({
+        interfaceName: '', mtu: 1280, logLevel: 'info', upstreamDns: '',
+        overrideDns: true, preferLocalRoutes: false, holepunch: true, matchDomains: '',
+    });
+    check('buildUpArgs omits empty optional values',
+        !argv.includes('--interface-name') && !argv.includes('--upstream-dns')
+        && !argv.includes('--match-domains')
+        && argv[argv.indexOf('--override-dns') + 1] === 'true');
+}
+
+// 8. Version comparison (hermetic)
+{
+    check('compareVersions ordering',
+        compareVersions('1.2.0', '1.2.1') < 0
+        && compareVersions('v1.2.1', '1.2.0') > 0
+        && compareVersions('0.16.0', 'v0.16') === 0
+        && compareVersions('1.0', '1.0.0') === 0);
+}
+
 if (failures > 0) {
     printerr(`${failures} test(s) failed`);
     System.exit(1);
