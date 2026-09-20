@@ -115,7 +115,6 @@ export default class PangolinPreferences extends ExtensionPreferences {
 
         const interfaceName = new Adw.EntryRow({
             title: _('Tunnel interface name'),
-            subtitle: _('Network device the tunnel creates. Leave it as "pangolin" unless it conflicts with another interface.'),
         });
         interfaceName.text = settings.get_string('interface-name');
         interfaceName.connect('changed', () => {
