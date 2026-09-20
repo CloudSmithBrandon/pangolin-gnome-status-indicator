@@ -11,7 +11,7 @@ import Gio from 'gi://Gio';
 
 import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
-import {compareVersions, execAsync} from './status.js';
+import {compareVersions, execAsync, parseAuthStatus} from './status.js';
 
 const RELEASES_URL = 'https://api.github.com/repos/fosrl/cli/releases/latest';
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -44,6 +44,40 @@ export default class PangolinPreferences extends ExtensionPreferences {
             settings.set_string('interface-name', interfaceName.text.trim());
         });
         connectionGroup.add(interfaceName);
+
+        const serverRow = new Adw.ActionRow({
+            title: _('Pangolin server'),
+            subtitle: _('Checking…'),
+        });
+        const serverButton = new Gtk.Button({
+            label: _('Change…'),
+            valign: Gtk.Align.CENTER,
+        });
+        serverButton.connect('clicked', () => {
+            // Interactive login covers cloud vs self-hosted and re-enrolls
+            // the client against the chosen server.
+            try {
+                Gio.Subprocess.new(
+                    ['ptyxis', '--new-window', '--', 'pangolin', 'login'],
+                    Gio.SubprocessFlags.NONE);
+            } catch {
+                serverRow.subtitle = _('Could not open a terminal for login.');
+            }
+        });
+        serverRow.add_suffix(serverButton);
+        serverRow.activatable_widget = serverButton;
+        connectionGroup.add(serverRow);
+
+        execAsync(['pangolin', 'auth', 'status'], null)
+            .then(r => {
+                const auth = parseAuthStatus(r);
+                serverRow.subtitle = auth.loggedIn && auth.serverUrl
+                    ? auth.serverUrl
+                    : _('Not signed in — press Change to pick a server.');
+            })
+            .catch(() => {
+                serverRow.subtitle = _('Could not read the current server.');
+            });
 
         // --- DNS & routing ----------------------------------------------
         const dnsGroup = new Adw.PreferencesGroup({

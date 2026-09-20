@@ -56,11 +56,11 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         this.menu.addAction('View Logs', () => {
-            this._extension.runCommand(['ptyxis', '--', PANGOLIN_BINARY, 'logs', 'client']);
+            this._extension.runCommand(['ptyxis', '--new-window', '--', PANGOLIN_BINARY, 'logs', 'client', '-f', '-n', '200']);
         });
 
         this._signInItem = this.menu.addAction('Sign In…', () => {
-            this._extension.runCommand(['ptyxis', '--', PANGOLIN_BINARY, 'login']);
+            this._extension.runCommand(['ptyxis', '--new-window', '--', PANGOLIN_BINARY, 'login']);
         });
         this._signInItem.visible = false;
 
@@ -161,8 +161,11 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
 
         if (summary.tunnelIps.length > 0)
             rows.push(['Tunnel IP', summary.tunnelIps.join(', ')]);
-        if (data.version)
-            rows.push(['CLI', `v${data.version}`]);
+        if (data.version) {
+            const remote = this._extension.lastRemoteVersion();
+            const stale = remote && compareVersions(remote, data.version) > 0;
+            rows.push(['CLI', `v${data.version}` + (stale ? ` — v${remote} available` : '')]);
+        }
 
         for (const [key, value] of rows) {
             this._statusSection.addMenuItem(new PopupMenu.PopupMenuItem(
@@ -263,10 +266,16 @@ export default class PangolinStatusExtension extends Extension {
         return this._tunnelBusy === true;
     }
 
+    /** Latest CLI release seen by the update check, for menu display. */
+    lastRemoteVersion() {
+        return this._settings?.get_string('last-remote-version') ?? '';
+    }
+
     /**
      * Start the tunnel with the configured flags. Tries unprivileged first
-     * (works once the binary has the needed file capabilities) and falls
-     * back to sudo -A (zenity askpass) when the TUN device cannot be created.
+     * (current CLI builds internally run sudo even with file capabilities,
+     * so this usually fails) and falls back to sudo -A (zenity askpass),
+     * carrying the same settings flags either way.
      */
     startTunnel() {
         if (this._tunnelBusy)
@@ -274,7 +283,7 @@ export default class PangolinStatusExtension extends Extension {
         this._tunnelBusy = true;
 
         return this.runCommand(this.getUpArgs())
-            .then(ok => ok ? true : this.runCommand([PANGOLIN_BINARY, 'up'], {sudo: true}))
+            .then(ok => ok ? true : this.runCommand(this.getUpArgs(), {sudo: true}))
             .finally(() => {
                 this._tunnelBusy = false;
             });
