@@ -114,6 +114,19 @@ export default class PangolinPreferences extends ExtensionPreferences {
         });
         dnsGroup.add(matchDomains);
 
+        // --- Notifications ------------------------------------------------
+        const notifyGroup = new Adw.PreferencesGroup({
+            title: _('Notifications'),
+            description: _('Pop-ups when the tunnel state changes.'),
+        });
+        page.add(notifyGroup);
+
+        const notifyState = new Adw.SwitchRow({
+            title: _('Notify on connect and disconnect'),
+            subtitle: _('Show a banner whenever the tunnel goes up or down.'),
+        });
+        notifyGroup.add(notifyState);
+
         // --- Advanced ----------------------------------------------------
         const advancedGroup = new Adw.PreferencesGroup({
             title: _('Advanced'),
@@ -238,6 +251,7 @@ export default class PangolinPreferences extends ExtensionPreferences {
         // --- Bindings & initial state ------------------------------------
         settings.bind('autoconnect', autoconnect, 'active', Gio.SettingsBindFlags.DEFAULT);
         settings.bind('keepalive', keepalive, 'active', Gio.SettingsBindFlags.DEFAULT);
+        settings.bind('notify-state', notifyState, 'active', Gio.SettingsBindFlags.DEFAULT);
         settings.bind('override-dns', overrideDns, 'active', Gio.SettingsBindFlags.DEFAULT);
         settings.bind('prefer-local-routes', preferLocalRoutes, 'active', Gio.SettingsBindFlags.DEFAULT);
         settings.bind('holepunch', holepunch, 'active', Gio.SettingsBindFlags.DEFAULT);

@@ -24,6 +24,20 @@ else
     echo "warning: glib-compile-schemas not found; settings may not load."
 fi
 
+# Compile the themed icon GResource so the tile shows the Pangolin mark,
+# recolored by the current theme. Falls back to the prebuilt copy committed
+# with the repo when the compiler is not installed.
+if command -v glib-compile-resources &>/dev/null; then
+    glib-compile-resources --sourcedir="${REPO_DIR}/icons" \
+        --target="${INSTALL_DIR}/pangolin-indicator.gresource" \
+        "${REPO_DIR}/resources/pangolin-indicator.gresource.xml"
+elif [ -f "${REPO_DIR}/pangolin-indicator.gresource" ]; then
+    cp "${REPO_DIR}/pangolin-indicator.gresource" "${INSTALL_DIR}/"
+else
+    echo "warning: glib-compile-resources not found; the brand icon will not load."
+    echo "         Install it with: sudo apt install libglib2.0-dev-bin"
+fi
+
 # Ensure the extension is marked enabled in dconf (idempotent).
 if command -v gsettings &>/dev/null; then
     CURRENT="$(gsettings get org.gnome.shell enabled-extensions)"
@@ -40,21 +54,7 @@ fi
 echo ""
 echo "Installed to ${INSTALL_DIR}"
 
-# --- One-time system setup the extension relies on ---------------------------
-NEEDS_SETCAP=1
-if command -v getcap &>/dev/null; then
-    CAPS="$(getcap /usr/local/bin/pangolin 2>/dev/null || true)"
-    if [[ "${CAPS}" == *cap_net_admin* ]]; then
-        NEEDS_SETCAP=0
-    fi
-fi
-
-if [[ "${NEEDS_SETCAP}" == "1" ]]; then
-    echo ""
-    echo "One-time setup — let the extension create the tunnel without root:"
-    echo "  sudo setcap cap_net_admin+ep /usr/local/bin/pangolin"
-fi
-
+# --- Environment checks -------------------------------------------------------
 UNIT_LIST="$(systemctl list-unit-files 2>/dev/null || true)"
 if [[ "${UNIT_LIST}" == *'pangolin-cli.service'* ]]; then
     echo ""

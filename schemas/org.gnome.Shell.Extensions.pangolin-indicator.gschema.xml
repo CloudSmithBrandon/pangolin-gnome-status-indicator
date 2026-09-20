@@ -11,6 +11,11 @@
       <summary>Keep the tunnel connected</summary>
       <description>Reconnect automatically when the tunnel drops, unless you disconnected it yourself.</description>
     </key>
+    <key name="notify-state" type="b">
+      <default>false</default>
+      <summary>Notify on connect and disconnect</summary>
+      <description>Show a banner whenever the tunnel goes up or down.</description>
+    </key>
     <key name="interface-name" type="s">
       <default>"pangolin"</default>
       <summary>Tunnel interface name</summary>

@@ -6,10 +6,6 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
-export const CONNECTED_ICON = 'network-vpn-symbolic';
-export const CONNECTING_ICON = 'network-vpn-acquiring-symbolic';
-export const DISCONNECTED_ICON = 'network-vpn-no-route-symbolic';
-
 export const NO_CLIENT_MESSAGE = 'No client is currently running';
 
 /**

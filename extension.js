@@ -19,9 +19,6 @@ import * as Config from 'resource:///org/gnome/shell/misc/config.js';
 import {fetchJson} from './net.js';
 
 import {
-    CONNECTED_ICON,
-    CONNECTING_ICON,
-    DISCONNECTED_ICON,
     buildUpArgs,
     compareVersions,
     execAsync,
@@ -33,6 +30,7 @@ import {
 } from './status.js';
 
 const PANGOLIN_BINARY = 'pangolin';
+const BRAND_ICON = 'pangolin-vpn-symbolic';
 const STATUS_POLL_INTERVAL = 30;
 const RAPID_POLL_INTERVAL = 2;
 const RAPID_POLL_MAX_ATTEMPTS = 15;
@@ -45,7 +43,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
     _init(extension) {
         super._init({
             title: 'Pangolin VPN',
-            iconName: DISCONNECTED_ICON,
+            iconName: DISBRAND_ICON,
             toggleMode: true,
         });
 
@@ -53,7 +51,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this._connected = false;
         this._busy = false;
 
-        this.menu.setHeader(DISCONNECTED_ICON, 'Pangolin VPN', 'Disconnected');
+        this.menu.setHeader(DISBRAND_ICON, 'Pangolin VPN', 'Disconnected');
 
         this._statusSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._statusSection);
@@ -121,7 +119,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this._connected = false;
         this.checked = false;
         this.subtitle = 'Connecting...';
-        this.menu.setHeader(CONNECTING_ICON, 'Pangolin VPN', 'Connecting...');
+        this.menu.setHeader(BRAND_ICON, 'Pangolin VPN', 'Connecting...');
         this._updateStatusSection(null);
     }
 
@@ -137,13 +135,13 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
             const host = shortHost(auth?.serverUrl) ?? data?.orgId ?? 'Connected';
             const subtitle = sites.length > 0 ? `${host} · ${sites.join(', ')}` : host;
             this.subtitle = subtitle;
-            this.menu.setHeader(CONNECTED_ICON, 'Pangolin VPN', subtitle);
+            this.menu.setHeader(BRAND_ICON, 'Pangolin VPN', subtitle);
         } else if (auth && !auth.loggedIn) {
             this.subtitle = 'Not signed in';
-            this.menu.setHeader(DISCONNECTED_ICON, 'Pangolin VPN', 'Not signed in');
+            this.menu.setHeader(DISBRAND_ICON, 'Pangolin VPN', 'Not signed in');
         } else {
             this.subtitle = 'Disconnected';
-            this.menu.setHeader(DISCONNECTED_ICON, 'Pangolin VPN', 'Disconnected');
+            this.menu.setHeader(DISBRAND_ICON, 'Pangolin VPN', 'Disconnected');
         }
 
         this._signInItem.visible = !connected && auth?.loggedIn === false;
@@ -192,7 +190,7 @@ class PangolinIndicator extends QuickSettings.SystemIndicator {
         super._init();
 
         this._indicator = this._addIndicator();
-        this._indicator.icon_name = DISCONNECTED_ICON;
+        this._indicator.icon_name = DISBRAND_ICON;
 
         this._toggle = new PangolinToggle(extension);
         this.quickSettingsItems.push(this._toggle);
@@ -200,7 +198,7 @@ class PangolinIndicator extends QuickSettings.SystemIndicator {
 
     applyStatus(status) {
         const {connected} = status;
-        this._indicator.icon_name = connected ? CONNECTED_ICON : DISCONNECTED_ICON;
+        this._indicator.icon_name = connected ? BRAND_ICON : DISBRAND_ICON;
         this._indicator.visible = connected;
         this._toggle.updateStatus(status);
     }
@@ -225,6 +223,17 @@ export default class PangolinStatusExtension extends Extension {
         this._desiredConnected = null;
         this._lastKeepaliveKick = 0;
         this._settings = this.getSettings();
+
+        // Themed icon shipped in the extension GResource (compiled at
+        // install time); unregister on disable per the review guidelines.
+        try {
+            this._resource = Gio.Resource.load(
+                GLib.build_filenamev([this.path, 'pangolin-indicator.gresource']));
+            Gio.resources_register(this._resource);
+        } catch (e) {
+            this._resource = null;
+            log(`pangolin-indicator: could not load icon resource: ${e.message}`);
+        }
 
         this._indicator = new PangolinIndicator(this);
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
@@ -251,6 +260,11 @@ export default class PangolinStatusExtension extends Extension {
     disable() {
         this._cancellable?.cancel();
         this._cancellable = null;
+
+        if (this._resource) {
+            Gio.resources_unregister(this._resource);
+            this._resource = null;
+        }
 
         this._removeSource('_pollSource');
         this._removeSource('_rapidSource');
@@ -378,10 +392,10 @@ export default class PangolinStatusExtension extends Extension {
             let source;
             let notification;
             if (major >= 46) {
-                source = new MessageTray.Source({title: 'Pangolin VPN', iconName: 'network-vpn-symbolic'});
+                source = new MessageTray.Source({title: 'Pangolin VPN', iconName: 'BRAND_ICON'});
                 notification = new MessageTray.Notification({source, title, body});
             } else {
-                source = new MessageTray.Source('Pangolin VPN', 'network-vpn-symbolic');
+                source = new MessageTray.Source('Pangolin VPN', 'BRAND_ICON');
                 notification = new MessageTray.Notification(source, title, body);
             }
             for (const [label, callback] of actions)
@@ -570,6 +584,18 @@ export default class PangolinStatusExtension extends Extension {
     }
 
     applyStatus(status) {
+        // Optional transition notifications: only fire on a real change, so
+        // toggling through "connecting" cannot spam banners.
+        const state = status.connected ? 'connected' : 'disconnected';
+        if (state !== this._lastNotifyState && this._lastNotifyState !== undefined
+                && this._settings?.get_boolean('notify-state')) {
+            this._notifyWithActions(
+                state === 'connected' ? 'Pangolin tunnel connected' : 'Pangolin tunnel disconnected',
+                status.auth?.serverUrl ? shortHost(status.auth.serverUrl) : '',
+                [['Settings', () => Main.extensionManager.openExtensionPrefs(this.uuid, this.metadata.name, {})]]);
+        }
+        this._lastNotifyState = state;
+
         this._indicator?.applyStatus(status);
     }
 
