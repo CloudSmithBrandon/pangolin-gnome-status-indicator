@@ -83,6 +83,11 @@ INNER_EOF
     status_calls=${status_calls:-0}
     errs=$(grep -c 'JS ERROR' "$SHELL_LOG" 2>/dev/null || true)
     errs=${errs:-0}
+    # Errors inside the status-apply chain are logged by extension.js
+    # (applyStatus wrapper) but swallowed by the poll's empty catch, so they
+    # never reach the shell log as JS ERROR. A UI bug must fail the run.
+    apply_errs=$(grep -c 'status apply failed' "$SHELL_LOG" 2>/dev/null || true)
+    apply_errs=${apply_errs:-0}
 
     if [ "$inner_rc" -ne 0 ] && [ "$inner_rc" -ne 124 ]; then
         fail "inner script exited $inner_rc — tail:"
@@ -102,6 +107,9 @@ INNER_EOF
 
     [ "$errs" -eq 0 ]
     assert "no JavaScript errors ($errs)" $?
+
+    [ "$apply_errs" -eq 0 ]
+    assert "no swallowed status-apply errors ($apply_errs)" $?
 
     if [ "$FAILURES" -gt 0 ]; then
         warn "artifacts kept in $WORK for debugging"

@@ -41,6 +41,12 @@ const UPDATE_CHECK_DELAY = 20;
 // keeps the drop-observation kick and the poll-time kick from churning.
 const KEEPALIVE_KICK_INTERVAL = 30;
 
+// Server URLs come from the enrolled server (parsed CLI output); only ever
+// hand a plain https URI to the platform launcher — never file:// or a
+// custom handler scheme. Module scope: used from both the menu action and
+// updateStatus.
+const dashboardOpenable = url => typeof url === 'string' && url.startsWith('https://');
+
 const PangolinToggle = GObject.registerClass(
 class PangolinToggle extends QuickSettings.QuickMenuToggle {
     _init(extension) {
@@ -73,7 +79,6 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         // The server URL ultimately comes from the enrolled server (parsed
         // from CLI output); only ever hand an https URI to the platform
         // launcher — never a file:// or handler scheme.
-        const dashboardOpenable = url => typeof url === 'string' && url.startsWith('https://');
         this._dashboardItem = this.menu.addAction('Open Dashboard', () => {
             if (dashboardOpenable(this._serverUrl))
                 Gio.AppInfo.launch_default_for_uri(this._serverUrl, null);
@@ -338,7 +343,7 @@ export default class PangolinStatusExtension extends Extension {
                 }
                 // A client process can still be alive while it negotiates a
                 // relay path; spawning `up` again would kill and restart it.
-                return execAsync(['pgrep', '-f', 'pangolin (up|watchdog)( |$)'], this._cancellable, 3000)
+                return execAsync(['pgrep', '-f', '(^|/)pangolin (up|watchdog)( |$)'], this._cancellable, 3000)
                     .then(r => {
                         if ((r.ok && r.stdout.trim() !== '')) {
                             this.requestRapidPoll();
@@ -495,9 +500,20 @@ export default class PangolinStatusExtension extends Extension {
             const program = GLib.find_program_in_path(argv[0]);
             if (!program)
                 return Promise.resolve(false);
-            if (program.startsWith(`${GLib.get_home_dir()}/`))
+            if (program.startsWith(`${GLib.get_home_dir()}/`)) {
+                if (escalate) {
+                    // A user-writable binary would run as root the moment
+                    // the user types their polkit password. Refuse instead
+                    // of executing it (the EGO rule is: no user-writable
+                    // code ever runs with privileges). The unprivileged
+                    // branch still works, so the CLI itself is unaffected.
+                    console.warn(`pangolin-indicator: refusing pkexec escalation of ${program} — ` +
+                        'reinstall the CLI system-wide (e.g. /usr/local/bin)');
+                    return Promise.resolve(false);
+                }
                 console.warn(`pangolin-indicator: ${argv[0]} resolved inside your home directory ` +
                     '(/usr/local/bin is the expected install location)');
+            }
             if (escalate) {
                 // polkit (pkexec) instead of `sudo -A`: the authentication
                 // dialog is native, and no user-writable helper script is
@@ -694,6 +710,19 @@ export default class PangolinStatusExtension extends Extension {
     }
 
     applyStatus(status) {
+        try {
+            this._applyStatus(status);
+        } catch (e) {
+            // A UI bug in this chain must be loud: it would otherwise be
+            // swallowed by the poll's empty catch — invisible to the
+            // journal AND to the harness (never reaches the JS ERROR log).
+            // The harness asserts zero "status apply failed" lines.
+            log(`pangolin-indicator: status apply failed: ${e?.message ?? e}`);
+            throw e;
+        }
+    }
+
+    _applyStatus(status) {
         const connected = status.connected;
         // Optional transition notifications: only fire on a real change, so
         // toggling through "connecting" cannot spam banners.

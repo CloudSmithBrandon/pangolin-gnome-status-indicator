@@ -233,7 +233,7 @@ export default class PangolinPreferences extends ExtensionPreferences {
 
                 updateAvailable = local !== '' && compareVersions(remote, local) > 0;
                 if (updateAvailable) {
-                    updateRow.subtitle = _('Version %s is available.').format(remote);
+                    updateRow.subtitle = _('Version %s is available.').replace('%s', remote);
                     updateButton.label = _('Install…');
                     updateButton.add_css_class('suggested-action');
                 } else {
@@ -243,7 +243,7 @@ export default class PangolinPreferences extends ExtensionPreferences {
                 }
             } catch (e) {
                 updateAvailable = false;
-                updateRow.subtitle = _('Check failed: %s').format(e.message);
+                updateRow.subtitle = _('Check failed: %s').replace('%s', e.message);
                 updateButton.label = _('Check for updates');
                 updateButton.remove_css_class('suggested-action');
             }
@@ -266,16 +266,26 @@ export default class PangolinPreferences extends ExtensionPreferences {
             // Run in a visible terminal so the updater's output (including
             // any password prompt) is right in front of the user, then watch
             // for the version to change and refresh the panel automatically.
+            updateButton.sensitive = false;
             updateButton.label = _('Installing…');
             const termArgv = terminalArgv(['pangolin', 'update']);
             if (termArgv === null) {
                 updateRow.subtitle = _('No terminal emulator found — run “pangolin update” manually.');
+                updateButton.sensitive = true;
+                updateButton.label = _('Check for updates');
                 return;
             }
             updateRow.subtitle = _('The updater is running in a terminal.');
-            execAsync(termArgv, null).catch(() => {
-                if (!pollClosed)
+            // Watchdog disabled (timeout 0): the promise may legitimately
+            // stay open for minutes while the user watches the updater, and
+            // its rejection here must never read as "could not open a
+            // terminal". Rejections now mean the spawn itself failed.
+            execAsync(termArgv, null, 0).catch(() => {
+                if (!pollClosed) {
                     updateRow.subtitle = _('Could not open a terminal — run “pangolin update” manually.');
+                    updateButton.sensitive = true;
+                    updateButton.label = _('Check for updates');
+                }
             });
 
             const before = versionValue.label;
@@ -301,8 +311,12 @@ export default class PangolinPreferences extends ExtensionPreferences {
                             versionValue.label = now;
                             return runCheck();
                         }
-                        if (!reschedule())
-                            updateRow.subtitle = _('Still showing %s — check manually.').format(before);
+                        if (!reschedule()) {
+                            updateRow.subtitle = _('Still showing %s — check manually.').replace('%s', before);
+                            updateButton.sensitive = true;
+                            updateButton.label = _('Check for updates');
+                            updateButton.remove_css_class('suggested-action');
+                        }
                     })
                     .catch(() => {
                         // A transient failure (the CLI being replaced

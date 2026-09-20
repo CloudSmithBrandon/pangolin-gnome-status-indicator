@@ -8,7 +8,6 @@ UUID="pangolin-indicator@yetanother.at"
 ZIP="${HERE}/${UUID}.zip"
 
 FILES=(metadata.json extension.js prefs.js status.js net.js)
-RESOURCES=(schemas icons)
 
 cd "${HERE}"
 
@@ -23,10 +22,17 @@ done
 rm -f schemas/gschemas.compiled
 
 rm -f "${ZIP}"
-zip -q -r "${ZIP}" "${FILES[@]}" "${RESOURCES[@]}"
+# Explicit file arguments, never directory recursion: a stray file dropped
+# into schemas/ or icons/ must not ship in the review bundle.
+zip -q -X "${ZIP}" \
+    metadata.json extension.js prefs.js status.js net.js \
+    schemas/org.gnome.Shell.Extensions.pangolin-indicator.gschema.xml \
+    icons/pangolin-vpn-symbolic.svg
 
-# Guard the allow-list promise: nothing outside it may be in the zip.
-if unzip -l "${ZIP}" | grep -Eq 'test/|install|uninstall|README|inttest'; then
+# Guard the allow-list promise: nothing outside it may be in the zip, and
+# the entry count must match exactly (dirs no longer appear as entries).
+ENTRY_COUNT="$(unzip -l "${ZIP}" | awk 'END {print $2}')"
+if [[ "${ENTRY_COUNT}" != 7 ]] || unzip -l "${ZIP}" | grep -Eq 'test/|install|uninstall|README|inttest|\.compiled'; then
     echo "error: zip contains files outside the distribution allow-list" >&2
     rm -f "${ZIP}"
     exit 1
