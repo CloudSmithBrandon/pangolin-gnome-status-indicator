@@ -7,7 +7,7 @@
       <description>Start the tunnel shortly after you sign in, using the settings below.</description>
     </key>
     <key name="keepalive" type="b">
-      <default>false</default>
+      <default>true</default>
       <summary>Keep the tunnel connected</summary>
       <description>Reconnect automatically when the tunnel drops, unless you disconnected it yourself.</description>
     </key>

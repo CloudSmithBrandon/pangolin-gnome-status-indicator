@@ -30,7 +30,6 @@ import {
 } from './status.js';
 
 const PANGOLIN_BINARY = 'pangolin';
-const BRAND_ICON = 'pangolin-vpn-symbolic';
 const STATUS_POLL_INTERVAL = 30;
 const RAPID_POLL_INTERVAL = 2;
 const RAPID_POLL_MAX_ATTEMPTS = 30;
@@ -43,7 +42,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
     _init(extension) {
         super._init({
             title: 'Pangolin VPN',
-            iconName: BRAND_ICON,
+            gicon: extension.brandGicon,
             toggleMode: true,
         });
 
@@ -51,7 +50,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this._connected = false;
         this._busy = false;
 
-        this.menu.setHeader(BRAND_ICON, 'Pangolin VPN', 'Disconnected');
+        this.menu.setHeader(null, 'Pangolin VPN', 'Disconnected');
 
         this._statusSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._statusSection);
@@ -110,7 +109,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this._connected = false;
         this.checked = false;
         this.subtitle = 'Disconnecting...';
-        this.menu.setHeader(BRAND_ICON, 'Pangolin VPN', 'Disconnecting...');
+        this.menu.setHeader(null, 'Pangolin VPN', 'Disconnecting...');
         this._updateStatusSection(null);
 
         this._extension.stopTunnel()
@@ -123,7 +122,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this._connected = false;
         this.checked = false;
         this.subtitle = 'Connecting...';
-        this.menu.setHeader(BRAND_ICON, 'Pangolin VPN', 'Connecting...');
+        this.menu.setHeader(null, 'Pangolin VPN', 'Connecting...');
         this._updateStatusSection(null);
     }
 
@@ -139,13 +138,13 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
             const host = shortHost(auth?.serverUrl) ?? data?.orgId ?? 'Connected';
             const subtitle = sites.length > 0 ? `${host} · ${sites.join(', ')}` : host;
             this.subtitle = subtitle;
-            this.menu.setHeader(BRAND_ICON, 'Pangolin VPN', subtitle);
+            this.menu.setHeader(null, 'Pangolin VPN', subtitle);
         } else if (auth && !auth.loggedIn) {
             this.subtitle = 'Not signed in';
-            this.menu.setHeader(BRAND_ICON, 'Pangolin VPN', 'Not signed in');
+            this.menu.setHeader(null, 'Pangolin VPN', 'Not signed in');
         } else {
             this.subtitle = 'Disconnected';
-            this.menu.setHeader(BRAND_ICON, 'Pangolin VPN', 'Disconnected');
+            this.menu.setHeader(null, 'Pangolin VPN', 'Disconnected');
         }
 
         this._signInItem.visible = !connected && auth?.loggedIn === false;
@@ -194,16 +193,14 @@ class PangolinIndicator extends QuickSettings.SystemIndicator {
         super._init();
 
         this._indicator = this._addIndicator();
-        this._indicator.icon_name = BRAND_ICON;
+        this._indicator.gicon = extension.brandGicon;
 
         this._toggle = new PangolinToggle(extension);
         this.quickSettingsItems.push(this._toggle);
     }
 
     applyStatus(status) {
-        const {connected} = status;
-        this._indicator.icon_name = BRAND_ICON;
-        this._indicator.visible = connected;
+        this._indicator.visible = status.connected;
         this._toggle.updateStatus(status);
     }
 
@@ -225,6 +222,7 @@ export default class PangolinStatusExtension extends Extension {
         this._auth = null;
         this._tunnelBusy = false;
         this._desiredConnected = null;
+        this._lastSeenConnected = null;
         this._lastKeepaliveKick = 0;
         this._settings = this.getSettings();
 
@@ -292,6 +290,17 @@ export default class PangolinStatusExtension extends Extension {
     /** Latest CLI release seen by the update check, for menu display. */
     lastRemoteVersion() {
         return this._settings?.get_string('last-remote-version') ?? '';
+    }
+
+    /**
+     * The brand icon ships inside the extension directory and is loaded by
+     * direct path: this never depends on icon-theme search paths, which do
+     * not reliably include extension files. The `-symbolic` basename lets
+     * Shell recolor it with the theme.
+     */
+    get brandGicon() {
+        return Gio.icon_new_for_string(
+            GLib.build_filenamev([this.path, 'icons', 'pangolin-vpn-symbolic.svg']));
     }
 
     /**
@@ -413,10 +422,10 @@ export default class PangolinStatusExtension extends Extension {
             let source;
             let notification;
             if (major >= 46) {
-                source = new MessageTray.Source({title: 'Pangolin VPN', iconName: BRAND_ICON});
+                source = new MessageTray.Source({title: 'Pangolin VPN', iconName: 'network-vpn-symbolic'});
                 notification = new MessageTray.Notification({source, title, body});
             } else {
-                source = new MessageTray.Source('Pangolin VPN', BRAND_ICON);
+                source = new MessageTray.Source('Pangolin VPN', 'network-vpn-symbolic');
                 notification = new MessageTray.Notification(source, title, body);
             }
             for (const [label, callback] of actions)
@@ -469,19 +478,24 @@ export default class PangolinStatusExtension extends Extension {
 
     /** Run `argv`; with escalate, spawn through pkexec (polkit dialog). */
     runCommand(argv, {escalate = false} = {}) {
-        let finalArgv = [...argv];
+        let finalArgv;
         try {
+            // Resolve relative program names ourselves: the subprocess
+            // launcher does not search PATH, and a bare 'pangolin' would
+            // fail to exec every time.
+            const program = GLib.find_program_in_path(argv[0]);
+            if (!program)
+                return Promise.resolve(false);
             if (escalate) {
                 // polkit (pkexec) instead of `sudo -A`: the authentication
                 // dialog is native, and no user-writable helper script is
                 // ever spawned with privileges (EGO requirement). The user's
                 // HOME is passed through so the CLI (running as root) still
                 // reads the USER's enrollment configuration.
-                const program = GLib.find_program_in_path(argv[0]);
-                if (!program)
-                    return Promise.resolve(false);
                 finalArgv = ['pkexec', 'env', `HOME=${GLib.get_home_dir()}`,
                              program, ...argv.slice(1)];
+            } else {
+                finalArgv = [program, ...argv.slice(1)];
             }
             const launcher = new Gio.SubprocessLauncher();
             const proc = launcher.spawnv(finalArgv);
@@ -670,9 +684,10 @@ export default class PangolinStatusExtension extends Extension {
     }
 
     applyStatus(status) {
+        const connected = status.connected;
         // Optional transition notifications: only fire on a real change, so
         // toggling through "connecting" cannot spam banners.
-        const state = status.connected ? 'connected' : 'disconnected';
+        const state = connected ? 'connected' : 'disconnected';
         if (state !== this._lastNotifyState && this._lastNotifyState !== undefined
                 && this._settings?.get_boolean('notify-state')) {
             this._notifyWithActions(
@@ -681,6 +696,15 @@ export default class PangolinStatusExtension extends Extension {
                 [['Settings', () => Main.extensionManager.openExtensionPrefs(this.uuid, this.metadata.name, {})]]);
         }
         this._lastNotifyState = state;
+
+        // Keepalive: reconnect immediately when a connected tunnel drops
+        // (state transition, not poll timer) while the user wants it up.
+        // The rate limit and pgrep guard inside startTunnel prevent churn
+        // and never kill a client that is still negotiating.
+        if (this._lastSeenConnected === true && !connected
+                && this._settings?.get_boolean('keepalive') && this._desiredConnected)
+            this._keepaliveKick();
+        this._lastSeenConnected = connected;
 
         this._indicator?.applyStatus(status);
     }

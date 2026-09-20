@@ -9,10 +9,11 @@
 #   WARM: starts mid-negotiation with a live client process
 #         -> `up` must NEVER be re-spawned (no destructive restart)
 #
-# Settings use the GSettings KEYFILE backend (GSETTINGS_BACKEND=keyfile):
-# a fresh dbus-run-session's dconf-service cannot reliably flush runtime
-# writes, so the session reads settings from a plain keyfile we pre-seed.
-# autoconnect/keepalive default true; only enabled-extensions is needed.
+# The dconf database is PRE-SEEDED with `dconf compile` before the session
+# starts (INI-style keyfile: groups are paths): runtime gsettings writes in
+# a fresh dbus-run-session are a flush race, and gnome-shell reads the
+# database file directly. autoconnect/keepalive default to true in the
+# schema; only enabled-extensions needs seeding.
 #
 # Usage: bash test/integration-test.sh
 set -uo pipefail
@@ -39,9 +40,9 @@ run_scenario() { # run_scenario <MODE>
     echo
     echo "=== scenario: $MODE"
 
-    mkdir -p "$STUB_DIR" "$WORK/data/gnome-shell/extensions/$UUID/schemas" "$WORK/config/gsettings"
-    cp "$HERE/stub/pangolin" "$STUB_DIR/pangolin"
-    chmod +x "$STUB_DIR/pangolin"
+    mkdir -p "$STUB_DIR" "$WORK/data/gnome-shell/extensions/$UUID/schemas" "$WORK/config/dconf" "$WORK/keyfile/org.gnome/shell"
+    cp "$HERE/stub/pangolin" "$HERE/stub/pgrep" "$STUB_DIR/"
+    chmod +x "$STUB_DIR/pangolin" "$STUB_DIR/pgrep"
     cp "$ROOT"/metadata.json "$ROOT"/extension.js "$ROOT"/prefs.js "$ROOT"/status.js "$ROOT"/net.js \
         "$WORK/data/gnome-shell/extensions/$UUID/"
     cp "$ROOT"/schemas/*.gschema.xml "$WORK/data/gnome-shell/extensions/$UUID/schemas/"
@@ -50,29 +51,23 @@ run_scenario() { # run_scenario <MODE>
         return 1
     fi
 
-    # Keyfile backend settings: enabled-extensions is the only key needed
-    # (autoconnect/keepalive default to true in the schema).
-    cat > "$WORK/config/gsettings/keys" <<KEYS_EOF
-[org/gnome/shell]
-enabled-extensions=['$UUID']
+    printf "['%s']" "$UUID" > "$WORK/keyfile/org.gnome/shell/enabled-extensions"
+    dconf compile "$WORK/config/dconf/user" "$WORK/keyfile"
 
-[org/gnome/shell/extensions/$UUID]
-autoconnect=true
-keepalive=true
-KEYS_EOF
-
+    : > "$CALLS"
     cat > "$INNER" <<INNER_EOF
 set -x
 export PATH="$STUB_DIR:\$PATH"
 export XDG_DATA_HOME="$WORK/data" XDG_CONFIG_HOME="$WORK/config"
-export GSETTINGS_BACKEND=keyfile
 export STUB_LOG="$CALLS" STUB_SCENARIO="$SCENARIO"
 if [ "$MODE" = "WARM" ]; then echo negotiating > "$SCENARIO"; else echo disconnected > "$SCENARIO"; fi
-timeout 60 gnome-shell --headless > "$SHELL_LOG" 2>&1 &
+timeout 75 gnome-shell --headless > "$SHELL_LOG" 2>&1 &
 SHELL_PID=\$!
-sleep 25
+sleep 6
+gnome-extensions enable pangolin-indicator@yetanother.at
+sleep 14
 echo connected > "$SCENARIO"
-sleep 15
+sleep 25
 if [ "$MODE" = "WARM" ]; then echo negotiating > "$SCENARIO"; else echo disconnected > "$SCENARIO"; fi
 wait \$SHELL_PID
 INNER_EOF
@@ -83,17 +78,19 @@ INNER_EOF
     echo "  --- assertions"
     local ups status_calls errs
     ups=$(awk '$2 == "up"' "$CALLS" 2>/dev/null | wc -l)
-    status_calls=$(grep -c 'status --json' "$CALLS" 2>/dev/null)
-    errs=$(grep -c 'JS ERROR' "$SHELL_LOG" 2>/dev/null)
+    status_calls=$(grep -c 'status --json' "$CALLS" 2>/dev/null || true)
+    status_calls=${status_calls:-0}
+    errs=$(grep -c 'JS ERROR' "$SHELL_LOG" 2>/dev/null || true)
+    errs=${errs:-0}
 
-    if [ "$inner_rc" -ne 0 ]; then
+    if [ "$inner_rc" -ne 0 ] && [ "$inner_rc" -ne 124 ]; then
         fail "inner script exited $inner_rc — tail:"
         sed 's/^/        /' "$WORK/inner.log" 2>/dev/null | tail -6
     fi
 
     if [ "$MODE" = "COLD" ]; then
-        [ "$ups" -eq 1 ]
-        assert "COLD: auto-connect spawned 'up' exactly once ($ups)" $?
+        [ "$ups" -ge 2 ]
+        assert "COLD: 'up' at login AND keepalive re-spawn after the drop ($ups)" $?
     else
         [ "$ups" -eq 0 ]
         assert "WARM: no destructive 'up' while a client is alive ($ups)" $?
@@ -107,10 +104,9 @@ INNER_EOF
 
     if [ "$FAILURES" -gt 0 ]; then
         warn "artifacts kept in $WORK for debugging"
-        if [ -f "$SHELL_LOG" ]; then
-            info "shell.log error tail:"
-            grep -iE 'error|pangolin' "$SHELL_LOG" | tail -6 | sed 's/^/        /'
-        fi
+        info "pangolin mentions in shell.log: $(grep -ic pangolin "$SHELL_LOG" 2>/dev/null)"
+        info "inner.log trace head:"
+        sed 's/^/        /' "$WORK/inner.log" 2>/dev/null | head -8
     else
         rm -rf "$WORK"
     fi

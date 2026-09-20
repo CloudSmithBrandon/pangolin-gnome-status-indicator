@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Stub pgrep for integration tests: reports a live "pangolin up" process
+# only when the scenario says a client is up or negotiating.
+SCENARIO="${STUB_SCENARIO:-/tmp/stub-scenario}"
+s=$(cat "$SCENARIO" 2>/dev/null)
+case "$s" in
+    negotiating|connected) echo "1234 pangolin up client" ;;
+    *) exit 1 ;;
+esac
