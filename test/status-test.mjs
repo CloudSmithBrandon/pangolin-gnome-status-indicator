@@ -9,7 +9,7 @@ import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import System from 'system';
 
-import {buildUpArgs, compareVersions, execAsync, extractVersion, interpretStatus, parseAuthStatus, shortHost, summarizePeers} from '../status.js';
+import {buildUpArgs, compareVersions, execAsync, extractVersion, interpretStatus, parseAuthStatus, shortHost, summarizePeers, versionFromReleaseRedirect} from '../status.js';
 
 let failures = 0;
 function check(name, cond, extra = '') {
@@ -226,6 +226,68 @@ function check(name, cond, extra = '') {
     const elapsedMs = (GLib.get_monotonic_time() - startedAt) / 1000;
     check('execAsync watchdog cancels a hung child', timedOut && elapsedMs < 2000,
         `elapsed=${elapsedMs}ms`);
+}
+
+// 10. Fail-closed status interpretation (a wrong "connected" is worse
+//     than a wrong "disconnected": keepalive and the tile both consume it)
+{
+    const r = interpretStatus({ok: true, stdout: '{"version":"0.17.0"}'});
+    check('JSON without connected field reports disconnected', r.connected === false);
+}
+{
+    const r = interpretStatus({ok: true, stdout: '{"connected":"yes"}'});
+    check('non-boolean connected reports disconnected', r.connected === false);
+}
+{
+    const r = interpretStatus({ok: true, stdout: "A new version is available: 9.9.9 (current: 0.17.0)\nRunning the updater is recommended\n"});
+    check('banner words cannot spoof the running heuristic', r.connected === false);
+}
+{
+    const r = interpretStatus({ok: true, stdout: 'Client is connected'});
+    check('human-readable fallback detects connected', r.connected === true);
+}
+
+// 11. buildUpArgs validation (settings reach a root-run argv; a value
+//     starting with "-" must never become a CLI flag)
+{
+    const argv = buildUpArgs({
+        interfaceName: '--write-config=/tmp/x', mtu: 1280, logLevel: 'info',
+        overrideDns: true, preferLocalRoutes: false, holepunch: true,
+    });
+    check('flag-looking interface name is dropped',
+        !argv.includes('--interface-name') && !argv.includes('--write-config=/tmp/x'));
+}
+{
+    const argv = buildUpArgs({
+        interfaceName: 'pangolin', mtu: 100, logLevel: 'verbose',
+        overrideDns: true, preferLocalRoutes: false, holepunch: true,
+    });
+    check('out-of-range mtu and unknown log level are dropped',
+        !argv.includes('--mtu') && !argv.includes('--log-level'));
+}
+{
+    const argv = buildUpArgs({
+        interfaceName: 'pangolin', mtu: 1280, logLevel: 'warn', upstreamDns: '1.1.1.1',
+        overrideDns: true, preferLocalRoutes: false, holepunch: true, matchDomains: '*.proxy.internal,*.home',
+    });
+    check('valid values still pass through',
+        argv.includes('--interface-name') && argv[argv.indexOf('--mtu') + 1] === '1280'
+        && argv[argv.indexOf('--log-level') + 1] === 'warn'
+        && argv[argv.indexOf('--match-domains') + 1] === '*.proxy.internal,*.home');
+}
+
+// 12. Release redirect parsing (update check reads the version from the
+//     final URL of github.com/.../releases/latest)
+{
+    check('parses tag from redirect target',
+        versionFromReleaseRedirect('https://github.com/fosrl/cli/tag/v0.17.0') === '0.17.0'
+        && versionFromReleaseRedirect('https://github.com/fosrl/cli/tag/0.16') === '0.16');
+}
+{
+    check('non-redirect URL yields no version',
+        versionFromReleaseRedirect('https://github.com/fosrl/cli/releases/latest') === null
+        && versionFromReleaseRedirect('') === null
+        && versionFromReleaseRedirect('https://github.com/fosrl/cli/tag/not-a-version') === null);
 }
 
 if (failures > 0) {

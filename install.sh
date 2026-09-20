@@ -34,12 +34,18 @@ else
     echo "warning: glib-compile-schemas not found; settings may not load."
 fi
 
-# Ensure the extension is marked enabled in dconf (idempotent).
+# Ensure the extension is marked enabled in dconf (idempotent). A fresh
+# system reports "@as []" (empty typed array), which the append branch
+# below cannot handle.
 if command -v gsettings &>/dev/null; then
     CURRENT="$(gsettings get org.gnome.shell enabled-extensions)"
     if [[ "${CURRENT}" != *"${EXTENSION_UUID}"* ]]; then
-        gsettings set org.gnome.shell enabled-extensions \
-            "$(printf '%s' "${CURRENT}" | sed "s/]$/, '${EXTENSION_UUID}']/")"
+        if [[ "${CURRENT}" == "@as []" ]]; then
+            gsettings set org.gnome.shell enabled-extensions "['${EXTENSION_UUID}']"
+        else
+            gsettings set org.gnome.shell enabled-extensions \
+                "$(printf '%s' "${CURRENT}" | sed "s/]$/, '${EXTENSION_UUID}']/")"
+        fi
     fi
 fi
 

@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # Deterministic pangolin CLI stub for integration tests.
 #
-# The scenario file (STUB_SCENARIO, default /tmp/stub-scenario) holds one
-# word read by `status --json` and `pgrep`:
+# The scenario file (STUB_SCENARIO, required) holds one word read by
+# `status --json` and `pgrep`:
 #   negotiating   -> daemon reports connected:false AND a live client
 #                    process exists (warm: up must not be re-spawned)
 #   connected     -> daemon reports connected AND a live client process
 #   disconnected  -> daemon reports disconnected AND no client process
 #                    (cold: auto-connect must spawn `up`)
 #
-# Every invocation is appended to STUB_LOG (default /tmp/stub-calls.log) as
-# "<epoch> <argv...>" so tests can assert on call counts and ordering.
+# Every invocation is appended to STUB_LOG (required) as "<epoch> <argv...>"
+# so tests can assert on call counts and ordering. Both paths are harness-
+# provided: refusing to run without them keeps the stub out of /tmp and out
+# of any manual invocation that would shadow the real CLI.
 set -u
-LOG="${STUB_LOG:-/tmp/stub-calls.log}"
-SCENARIO="${STUB_SCENARIO:-/tmp/stub-scenario}"
+LOG="${STUB_LOG:?STUB_LOG must be set by test/integration-test.sh}"
+SCENARIO="${STUB_SCENARIO:?STUB_SCENARIO must be set by test/integration-test.sh}"
 
 printf '%s %s\n' "$(date +%s.%N)" "$*" >> "$LOG"
 

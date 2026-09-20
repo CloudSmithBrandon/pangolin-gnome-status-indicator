@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Stub pgrep for integration tests: reports a live "pangolin up" process
-# only when the scenario says a client is up or negotiating.
-SCENARIO="${STUB_SCENARIO:-/tmp/stub-scenario}"
+# only when the scenario says a client is up or negotiating. Refuses to run
+# outside the harness so it can never shadow the real pgrep.
+SCENARIO="${STUB_SCENARIO:?STUB_SCENARIO must be set by test/integration-test.sh}"
 s=$(cat "$SCENARIO" 2>/dev/null)
 case "$s" in
     negotiating|connected) echo "1234 pangolin up client" ;;

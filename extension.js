@@ -27,6 +27,8 @@ import {
     parseAuthStatus,
     shortHost,
     summarizePeers,
+    terminalArgv,
+    versionFromReleaseRedirect,
 } from './status.js';
 
 const PANGOLIN_BINARY = 'pangolin';
@@ -35,13 +37,16 @@ const RAPID_POLL_INTERVAL = 2;
 const RAPID_POLL_MAX_ATTEMPTS = 30;
 const AUTOCONNECT_DELAY = 10;
 const UPDATE_CHECK_DELAY = 20;
-const CLI_RELEASES_URL = 'https://api.github.com/repos/fosrl/cli/releases/latest';
+// The HTML releases endpoint 302-redirects to /tag/<version>: the final URL
+// carries the version and the endpoint is NOT subject to the JSON API's
+// unauthenticated rate limit (api.github.com 403s and never redirects).
+const CLI_RELEASES_URL = 'https://github.com/fosrl/cli/releases/latest';
 
 const PangolinToggle = GObject.registerClass(
 class PangolinToggle extends QuickSettings.QuickMenuToggle {
     _init(extension) {
         super._init({
-            title: 'Pangolin VPN',
+            title: 'Pangolin',
             gicon: extension.brandGicon,
             toggleMode: true,
         });
@@ -50,7 +55,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this._connected = false;
         this._busy = false;
 
-        this.menu.setHeader(null, 'Pangolin VPN', 'Disconnected');
+        this.menu.setHeader(null, 'Pangolin', 'Disconnected');
 
         this._statusSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._statusSection);
@@ -66,8 +71,12 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         });
         this._signInItem.visible = false;
 
+        // The server URL ultimately comes from the enrolled server (parsed
+        // from CLI output); only ever hand an https URI to the platform
+        // launcher — never a file:// or handler scheme.
+        const dashboardOpenable = url => typeof url === 'string' && url.startsWith('https://');
         this._dashboardItem = this.menu.addAction('Open Dashboard', () => {
-            if (this._serverUrl)
+            if (dashboardOpenable(this._serverUrl))
                 Gio.AppInfo.launch_default_for_uri(this._serverUrl, null);
         });
         this._dashboardItem.visible = false;
@@ -109,7 +118,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this._connected = false;
         this.checked = false;
         this.subtitle = 'Disconnecting...';
-        this.menu.setHeader(null, 'Pangolin VPN', 'Disconnecting...');
+        this.menu.setHeader(null, 'Pangolin', 'Disconnecting...');
         this._updateStatusSection(null);
 
         this._extension.stopTunnel()
@@ -122,7 +131,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this._connected = false;
         this.checked = false;
         this.subtitle = 'Connecting...';
-        this.menu.setHeader(null, 'Pangolin VPN', 'Connecting...');
+        this.menu.setHeader(null, 'Pangolin', 'Connecting...');
         this._updateStatusSection(null);
     }
 
@@ -130,7 +139,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this._connected = connected;
         this.checked = connected;
         this._serverUrl = auth?.serverUrl ?? null;
-        this._dashboardItem.visible = connected && !!this._serverUrl;
+        this._dashboardItem.visible = connected && dashboardOpenable(this._serverUrl);
 
         if (connected) {
             const summary = summarizePeers(data);
@@ -138,13 +147,13 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
             const host = shortHost(auth?.serverUrl) ?? data?.orgId ?? 'Connected';
             const subtitle = sites.length > 0 ? `${host} · ${sites.join(', ')}` : host;
             this.subtitle = subtitle;
-            this.menu.setHeader(null, 'Pangolin VPN', subtitle);
+            this.menu.setHeader(null, 'Pangolin', subtitle);
         } else if (auth && !auth.loggedIn) {
             this.subtitle = 'Not signed in';
-            this.menu.setHeader(null, 'Pangolin VPN', 'Not signed in');
+            this.menu.setHeader(null, 'Pangolin', 'Not signed in');
         } else {
             this.subtitle = 'Disconnected';
-            this.menu.setHeader(null, 'Pangolin VPN', 'Disconnected');
+            this.menu.setHeader(null, 'Pangolin', 'Disconnected');
         }
 
         this._signInItem.visible = !connected && auth?.loggedIn === false;
@@ -326,7 +335,7 @@ export default class PangolinStatusExtension extends Extension {
                 }
                 // A client process can still be alive while it negotiates a
                 // relay path; spawning `up` again would kill and restart it.
-                return execAsync(['pgrep', '-f', 'pangolin (up|watchdog)'], this._cancellable, 3000)
+                return execAsync(['pgrep', '-f', 'pangolin (up|watchdog)( |$)'], this._cancellable, 3000)
                     .then(r => {
                         if ((r.ok && r.stdout.trim() !== '')) {
                             this.requestRapidPoll();
@@ -383,10 +392,7 @@ export default class PangolinStatusExtension extends Extension {
         // /releases/latest redirects to /tag/<version>: the final URL carries
         // the version and is not subject to the JSON API's rate limits.
         const remoteP = fetchFinalUrl(CLI_RELEASES_URL, this._cancellable)
-            .then(url => {
-                const m = url.match(/\/tag\/v?([0-9]+(?:\.[0-9]+)*)/);
-                return m ? m[1] : null;
-            })
+            .then(url => versionFromReleaseRedirect(url))
             .catch(() => null);
 
         return Promise.all([localP, remoteP]).then(([local, remote]) => {
@@ -480,12 +486,15 @@ export default class PangolinStatusExtension extends Extension {
     runCommand(argv, {escalate = false} = {}) {
         let finalArgv;
         try {
-            // Resolve relative program names ourselves: the subprocess
-            // launcher does not search PATH, and a bare 'pangolin' would
-            // fail to exec every time.
+            // Resolve argv[0] to an absolute path explicitly: GIO's
+            // PATH-search behavior differs across launcher APIs, and an
+            // absolute path makes both branches behave identically.
             const program = GLib.find_program_in_path(argv[0]);
             if (!program)
                 return Promise.resolve(false);
+            if (program.startsWith(`${GLib.get_home_dir()}/`))
+                console.warn(`pangolin-indicator: ${argv[0]} resolved inside your home directory ` +
+                    '(/usr/local/bin is the expected install location)');
             if (escalate) {
                 // polkit (pkexec) instead of `sudo -A`: the authentication
                 // dialog is native, and no user-writable helper script is
@@ -509,7 +518,9 @@ export default class PangolinStatusExtension extends Extension {
                 });
             });
         } catch (e) {
-            log(`pangolin-indicator: failed to run ${finalArgv.join(' ')}: ${e.message}`);
+            // argv, not finalArgv: a failure before assignment must not
+            // replace the original error with a TypeError of its own.
+            log(`pangolin-indicator: failed to run ${argv.join(' ')}: ${e.message}`);
             return Promise.resolve(false);
         }
     }
@@ -583,20 +594,14 @@ export default class PangolinStatusExtension extends Extension {
      * on screen lock) must not kill a log window the user is reading.
      */
     launchTerminal(argv) {
-        const launchers = {
-            ptyxis: a => ['ptyxis', '--new-window', '--', ...a],
-            'gnome-terminal': a => ['gnome-terminal', '--', ...a],
-            kgx: a => ['kgx', '--', ...a],
-            xterm: a => ['xterm', '-e', ...a],
-        };
-        const emulator = Object.keys(launchers).find(t => GLib.find_program_in_path(t) !== null);
-        if (!emulator) {
+        const termArgv = terminalArgv(argv);
+        if (termArgv === null) {
             Main.notify('Pangolin VPN', 'No terminal emulator found to open the requested view.');
             return;
         }
         try {
             const launcher = new Gio.SubprocessLauncher();
-            const proc = launcher.spawnv(launchers[emulator](argv));
+            const proc = launcher.spawnv(termArgv);
             proc.wait_async(null, (p, res) => p.wait_finish(res));
         } catch (e) {
             Main.notify('Pangolin VPN', `Could not launch terminal: ${e.message}`);

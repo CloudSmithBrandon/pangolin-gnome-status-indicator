@@ -76,20 +76,29 @@ export function interpretStatus({ok, stdout}) {
 
     // 0.17.0 prefixes `status --json` with an update banner; parse from the
     // first brace so banner text can never break (or spoof) the state.
+    // A missing or non-boolean `connected` field means we do NOT know the
+    // state: report disconnected rather than guessing connected.
     const start = stdout.indexOf('{');
     if (start >= 0) {
         try {
             const data = JSON.parse(stdout.slice(start));
-            const connected = typeof data.connected === 'boolean' ? data.connected : true;
-            return {connected, data};
+            return {connected: data.connected === true, data};
         } catch {
             // fall through to heuristics
         }
     }
 
-    // Heuristics for human-readable output of other versions.
+    // Heuristics for human-readable output of other versions. Match the
+    // CLI's own status phrasings only — banner words like "update" must
+    // never flip the state, and negations ("no client is ...") never count
+    // as running.
     const text = stdout.toLowerCase();
-    return {connected: text.includes('running') || text.includes('connected'), data: null};
+    if (text.includes('no client'))
+        return {connected: false, data: null};
+    return {
+        connected: text.includes('client is running') || text.includes('client is connected'),
+        data: null,
+    };
 }
 
 /**
@@ -131,27 +140,84 @@ export function shortHost(serverUrl) {
 }
 
 /**
+ * Build an argv that opens `argv` inside the first available terminal
+ * emulator, or null when none is installed. Pure argv data, no shell —
+ * shared by the extension (View Logs, Sign In) and the preferences
+ * updater, so the emulator choice lives in exactly one place.
+ */
+export function terminalArgv(argv) {
+    const launchers = {
+        ptyxis: a => ['ptyxis', '--new-window', '--', ...a],
+        'gnome-terminal': a => ['gnome-terminal', '--', ...a],
+        kgx: a => ['kgx', '--', ...a],
+        xterm: a => ['xterm', '-e', ...a],
+    };
+    for (const [term, build] of Object.entries(launchers)) {
+        if (GLib.find_program_in_path(term) !== null)
+            return build(argv);
+    }
+    return null;
+}
+
+/**
  * Build the `pangolin up` argument list from settings values.
  * `s` carries the GSettings-shaped fields:
  *   {interfaceName, mtu, logLevel, upstreamDns, overrideDns,
  *    preferLocalRoutes, holepunch, matchDomains}
+ *
+ * These values reach an argv that may run as root through pkexec. No shell
+ * is involved, but a value starting with '-' could still pass extra flags
+ * to the CLI; every free-form value is charset-validated at this choke
+ * point and dropped (CLI default applies) when it fails.
  */
+const IFACE_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,14}$/;   // kernel IFNAMSIZ 15
+const DNS_RE = /^[A-Za-z0-9.:][A-Za-z0-9.:-]*$/;         // ip/hostname chars
+const DOMAINS_RE = /^[A-Za-z0-9_*][A-Za-z0-9_*.,-]*$/;   // comma-separated globs
+const LOG_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
+
+function validOrDrop(name, value, ok) {
+    if (ok)
+        return value;
+    console.warn(`pangolin-indicator: ignoring invalid ${name} setting`);
+    return null;
+}
+
 export function buildUpArgs(s) {
     const argv = ['pangolin', 'up', '--silent'];
 
-    if (s.interfaceName)
-        argv.push('--interface-name', s.interfaceName);
-    argv.push('--mtu', String(s.mtu));
-    argv.push('--log-level', s.logLevel);
-    if (s.upstreamDns)
-        argv.push('--upstream-dns', s.upstreamDns);
+    const iface = s.interfaceName ? validOrDrop('interface-name', s.interfaceName, IFACE_RE.test(s.interfaceName)) : null;
+    if (iface)
+        argv.push('--interface-name', iface);
+    const mtu = Number(s.mtu);
+    if (Number.isInteger(mtu) && mtu >= 576 && mtu <= 10000)
+        argv.push('--mtu', String(mtu));
+    else
+        console.warn(`pangolin-indicator: ignoring invalid mtu setting: ${s.mtu}`);
+    if (LOG_LEVELS.has(s.logLevel))
+        argv.push('--log-level', s.logLevel);
+    else if (s.logLevel)
+        console.warn(`pangolin-indicator: ignoring invalid log-level setting: ${s.logLevel}`);
+    const dns = s.upstreamDns ? validOrDrop('upstream-dns', s.upstreamDns, DNS_RE.test(s.upstreamDns)) : null;
+    if (dns)
+        argv.push('--upstream-dns', dns);
     argv.push('--override-dns', s.overrideDns ? 'true' : 'false');
     argv.push('--prefer-local-routes', s.preferLocalRoutes ? 'true' : 'false');
     argv.push('--holepunch', s.holepunch ? 'true' : 'false');
-    if (s.matchDomains)
-        argv.push('--match-domains', s.matchDomains);
+    const domains = s.matchDomains ? validOrDrop('match-domains', s.matchDomains, DOMAINS_RE.test(s.matchDomains)) : null;
+    if (domains)
+        argv.push('--match-domains', domains);
 
     return argv;
+}
+
+/**
+ * Extract the CLI version from the final URL of a GitHub
+ * `/releases/latest` redirect ("https://github.com/fosrl/cli/tag/v0.17.0").
+ * Returns "0.17.0" or null when the URL carries no tag.
+ */
+export function versionFromReleaseRedirect(url) {
+    const m = String(url).match(/\/tag\/v?([0-9]+(?:\.[0-9]+)*)/);
+    return m ? m[1] : null;
 }
 
 /**

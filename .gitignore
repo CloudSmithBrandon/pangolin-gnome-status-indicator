@@ -1,3 +1,4 @@
 *.compiled
 schemas/gschemas.compiled
 .inttest-*/
+*.zip

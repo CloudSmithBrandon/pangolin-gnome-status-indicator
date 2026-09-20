@@ -45,7 +45,12 @@ export function fetchFinalUrl(url, cancellable = null) {
         getSession().send_and_read_async(msg, GLib.PRIORITY_DEFAULT, cancellable, (sess, res) => {
             try {
                 sess.send_and_read_finish(res);
-                resolve(msg.get_uri().to_string());
+                // The initial URL was https; refuse to resolve through a
+                // redirect chain that ended somewhere insecure.
+                const final = msg.get_uri();
+                if (final.get_scheme() !== 'https')
+                    throw new Error('redirect chain did not end in https');
+                resolve(final.to_string());
             } catch (e) {
                 reject(e);
             }

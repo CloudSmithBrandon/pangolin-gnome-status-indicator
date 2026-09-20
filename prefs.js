@@ -11,10 +11,19 @@ import Gio from 'gi://Gio';
 
 import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
-import {compareVersions, execAsync, extractVersion, parseAuthStatus} from './status.js';
+import {
+    compareVersions,
+    execAsync,
+    extractVersion,
+    parseAuthStatus,
+    terminalArgv,
+    versionFromReleaseRedirect,
+} from './status.js';
 import {fetchFinalUrl} from './net.js';
 
-const RELEASES_URL = 'https://api.github.com/repos/fosrl/cli/releases/latest';
+// The HTML endpoint redirects to /tag/<version>; the JSON API would
+// rate-limit (403) and never carries the tag in a URL.
+const RELEASES_URL = 'https://github.com/fosrl/cli/releases/latest';
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
 
 export default class PangolinPreferences extends ExtensionPreferences {
@@ -54,10 +63,13 @@ export default class PangolinPreferences extends ExtensionPreferences {
         serverButton.connect('clicked', () => {
             // Interactive login covers cloud vs self-hosted and re-enrolls
             // the client against the chosen server.
+            const argv = terminalArgv(['pangolin', 'login']);
+            if (argv === null) {
+                serverRow.subtitle = _('No terminal emulator found — run “pangolin login” manually.');
+                return;
+            }
             try {
-                Gio.Subprocess.new(
-                    ['ptyxis', '--new-window', '--', 'pangolin', 'login'],
-                    Gio.SubprocessFlags.NONE);
+                Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE);
             } catch {
                 serverRow.subtitle = _('Could not open a terminal for login.');
             }
@@ -214,8 +226,7 @@ export default class PangolinPreferences extends ExtensionPreferences {
                 const local = installedVersion((await execAsync(['pangolin', 'version'], null)).stdout);
                 versionValue.label = local || _('unknown');
                 const finalUrl = await fetchFinalUrl(RELEASES_URL, null);
-                const m = finalUrl.match(/\/tag\/v?([0-9]+(?:\.[0-9]+)*)/);
-                const remote = m ? m[1] : null;
+                const remote = versionFromReleaseRedirect(finalUrl);
                 if (remote === null)
                     throw new Error(_('could not determine the latest release'));
                 settings.set_string('last-remote-version', remote);
@@ -239,32 +250,65 @@ export default class PangolinPreferences extends ExtensionPreferences {
             updateButton.sensitive = true;
         };
 
+        // Post-install polling: watch the CLI version for up to two minutes
+        // and refresh the row when it changes. Sources are tracked so a
+        // closed window stops the poll instead of ticking at dead widgets.
+        const pollSources = new Set();
+        let pollClosed = false;
+        window.connect('closed', () => {
+            pollClosed = true;
+            for (const id of pollSources)
+                GLib.source_remove(id);
+            pollSources.clear();
+        });
+
         const installUpdate = () => {
             // Run in a visible terminal so the updater's output (including
             // any password prompt) is right in front of the user, then watch
             // for the version to change and refresh the panel automatically.
             updateButton.label = _('Installing…');
+            const termArgv = terminalArgv(['pangolin', 'update']);
+            if (termArgv === null) {
+                updateRow.subtitle = _('No terminal emulator found — run “pangolin update” manually.');
+                return;
+            }
             updateRow.subtitle = _('The updater is running in a terminal.');
-            execAsync(['ptyxis', '--new-window', '--', 'pangolin', 'update'], null).catch(() => {});
+            execAsync(termArgv, null).catch(() => {
+                if (!pollClosed)
+                    updateRow.subtitle = _('Could not open a terminal — run “pangolin update” manually.');
+            });
 
             const before = versionValue.label;
             let attempts = 0;
+            const reschedule = () => {
+                if (pollClosed || attempts >= 8)
+                    return false;
+                const id = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 15,
+                    () => { pollSources.delete(id); pollInstalled(); return GLib.SOURCE_REMOVE; });
+                pollSources.add(id);
+                return true;
+            };
             const pollInstalled = () => {
+                if (pollClosed)
+                    return;
                 attempts++;
                 execAsync(['pangolin', 'version'], null)
                     .then(r => {
+                        if (pollClosed)
+                            return;
                         const now = installedVersion(r.stdout);
                         if (now && now !== before) {
                             versionValue.label = now;
                             return runCheck();
                         }
-                        if (attempts < 8)
-                            GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 15,
-                                () => { pollInstalled(); return GLib.SOURCE_REMOVE; });
-                        else
+                        if (!reschedule())
                             updateRow.subtitle = _('Still showing %s — check manually.').format(before);
                     })
-                    .catch(() => {});
+                    .catch(() => {
+                        // A transient failure (the CLI being replaced
+                        // mid-update, say) must not end the polling chain.
+                        reschedule();
+                    });
             };
             pollInstalled();
         };
