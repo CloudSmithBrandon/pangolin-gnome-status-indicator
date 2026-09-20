@@ -1,0 +1,6 @@
+[org/gnome/shell]
+enabled-extensions=['pangolin-indicator@yetanother.at']
+
+[org/gnome/shell/extensions/pangolin-indicator@yetanother.at]
+autoconnect=true
+keepalive=true

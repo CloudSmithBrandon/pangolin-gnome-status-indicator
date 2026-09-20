@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.Shell.Extensions.pangolin-indicator" path="/org/gnome/Shell/Extensions/pangolin-indicator/">
+    <key name="autoconnect" type="b">
+      <default>true</default>
+      <summary>Connect automatically at login</summary>
+      <description>Start the tunnel shortly after you sign in, using the settings below.</description>
+    </key>
+    <key name="keepalive" type="b">
+      <default>false</default>
+      <summary>Keep the tunnel connected</summary>
+      <description>Reconnect automatically when the tunnel drops, unless you disconnected it yourself.</description>
+    </key>
+    <key name="notify-state" type="b">
+      <default>false</default>
+      <summary>Notify on connect and disconnect</summary>
+      <description>Show a banner whenever the tunnel goes up or down.</description>
+    </key>
+    <key name="interface-name" type="s">
+      <default>"pangolin"</default>
+      <summary>Tunnel interface name</summary>
+      <description>Name of the virtual network device Pangolin creates.</description>
+    </key>
+    <key name="upstream-dns" type="s">
+      <default>"1.1.1.1"</default>
+      <summary>Upstream DNS server</summary>
+      <description>DNS server used for names outside the tunnel.</description>
+    </key>
+    <key name="override-dns" type="b">
+      <default>true</default>
+      <summary>Resolve resource names through the tunnel</summary>
+      <description>Use the tunnel's DNS to resolve internal resource names.</description>
+    </key>
+    <key name="prefer-local-routes" type="b">
+      <default>true</default>
+      <summary>Prefer local network</summary>
+      <description>When your local network and the tunnel can both reach an address, use the local one.</description>
+    </key>
+    <key name="holepunch" type="b">
+      <default>true</default>
+      <summary>Direct connections</summary>
+      <description>Try a direct peer-to-peer connection before falling back to a relay.</description>
+    </key>
+    <key name="mtu" type="i">
+      <default>1280</default>
+      <summary>Tunnel MTU</summary>
+      <description>Maximum packet size inside the tunnel. Leave at 1280 unless you know you need a different value.</description>
+    </key>
+    <key name="log-level" type="s">
+      <default>"info"</default>
+      <summary>Log level</summary>
+      <description>How much detail the client logs: debug, info, warn or error.</description>
+    </key>
+    <key name="match-domains" type="s">
+      <default>""</default>
+      <summary>Tunnel domains</summary>
+      <description>Only names matching these comma-separated patterns use the tunnel (e.g. *.proxy.internal). Leave empty to send all lookups through the tunnel.</description>
+    </key>
+    <key name="check-updates-at-login" type="b">
+      <default>true</default>
+      <summary>Check for client updates at login</summary>
+      <description>Once per session, compare the installed CLI with the latest release and notify when an update exists.</description>
+    </key>
+    <key name="last-remote-version" type="s">
+      <default>""</default>
+      <summary>Last seen remote version</summary>
+      <description>Version reported by the most recent update check. Used by the preferences window.</description>
+    </key>
+  </schema>
+</schemalist>

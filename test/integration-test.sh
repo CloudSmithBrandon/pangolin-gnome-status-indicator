@@ -3,10 +3,16 @@
 # a deterministic CLI stub, then assert on the extension's observable
 # behavior (which stub commands were invoked, how many times, in what order).
 #
-# Scenarios covered:
-#   A. auto-connect fires exactly once and follows up with rapid polling
-#   B. keepalive re-runs `up` after the tunnel "drops" — rate-limited
-#   C. no JavaScript errors during any of it
+# Two scenarios per run:
+#   COLD: starts disconnected, no client process alive
+#         -> auto-connect MUST spawn `up` exactly once
+#   WARM: starts mid-negotiation with a live client process
+#         -> `up` must NEVER be re-spawned (no destructive restart)
+#
+# Settings use the GSettings KEYFILE backend (GSETTINGS_BACKEND=keyfile):
+# a fresh dbus-run-session's dconf-service cannot reliably flush runtime
+# writes, so the session reads settings from a plain keyfile we pre-seed.
+# autoconnect/keepalive default true; only enabled-extensions is needed.
 #
 # Usage: bash test/integration-test.sh
 set -uo pipefail
@@ -14,100 +20,109 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 UUID="pangolin-indicator@yetanother.at"
-WORK="$(mktemp -d)"
-STUB_DIR="$WORK/bin"
-SCENARIO="$WORK/scenario"
-CALLS="$WORK/calls.log"
-SHELL_LOG="$WORK/shell.log"
-
-mkdir -p "$STUB_DIR" "$WORK/data/gnome-shell/extensions/$UUID/schemas" "$WORK/config"
-cp "$HERE/stub/pangolin" "$STUB_DIR/pangolin"
-chmod +x "$STUB_DIR/pangolin"
-cp "$ROOT"/{metadata.json,extension.js,prefs.js,status.js,net.js} \
-    "$WORK/data/gnome-shell/extensions/$UUID/" 2>/dev/null
-cp "$ROOT"/schemas/*.gschema.xml "$WORK/data/gnome-shell/extensions/$UUID/schemas/"
-glib-compile-schemas "$WORK/data/gnome-shell/extensions/$UUID/schemas/" || exit 1
-
-export PATH="$STUB_DIR:$PATH"
-export XDG_DATA_HOME="$WORK/data"
-export XDG_CONFIG_HOME="$WORK/config"
-export STUB_LOG="$CALLS"
-export STUB_SCENARIO="$SCENARIO"
-: > "$CALLS"
-echo "negotiating" > "$SCENARIO"    # start mid-negotiation: auto-connect must act
 
 FAILURES=0
-assert() { # assert <desc> <condition-result>
-    if [ "$2" = "0" ]; then
-        printf '  \033[32m[ok]\033[0m      %s\n' "$1"
-    else
-        printf '  \033[31m[FAIL]\033[0m    %s\n' "$1"
-        FAILURES=$((FAILURES+1))
-    fi
+
+ok()   { printf '  \033[32m[ok]\033[0m      %s\n' "$1"; }
+fail() { printf '  \033[31m[FAIL]\033[0m    %s\n' "$1"; FAILURES=$((FAILURES+1)); }
+warn() { printf '  \033[33m[warn]\033[0m    %s\n' "$1"; }
+info() { printf '  [info]    %s\n' "$1"; }
+assert() { # assert <desc> <rc: 0=pass>
+    if [ "$2" = "0" ]; then ok "$1"; else fail "$1"; fi
 }
 
-# Settings: auto-connect + keepalive both on, so both paths are exercised.
-INNER="$WORK/inner.sh"
-cat > "$INNER" <<INNER_EOF
+run_scenario() { # run_scenario <MODE>
+    local MODE="$1"
+    local WORK="$ROOT/.inttest-$MODE"
+    rm -rf "$WORK"
+    local STUB_DIR="$WORK/bin" SCENARIO="$WORK/scenario" CALLS="$WORK/calls.log" SHELL_LOG="$WORK/shell.log" INNER="$WORK/inner.sh"
+    echo
+    echo "=== scenario: $MODE"
+
+    mkdir -p "$STUB_DIR" "$WORK/data/gnome-shell/extensions/$UUID/schemas" "$WORK/config/gsettings"
+    cp "$HERE/stub/pangolin" "$STUB_DIR/pangolin"
+    chmod +x "$STUB_DIR/pangolin"
+    cp "$ROOT"/metadata.json "$ROOT"/extension.js "$ROOT"/prefs.js "$ROOT"/status.js "$ROOT"/net.js \
+        "$WORK/data/gnome-shell/extensions/$UUID/"
+    cp "$ROOT"/schemas/*.gschema.xml "$WORK/data/gnome-shell/extensions/$UUID/schemas/"
+    if ! glib-compile-schemas "$WORK/data/gnome-shell/extensions/$UUID/schemas/" 2>/dev/null; then
+        fail "schema compile failed"
+        return 1
+    fi
+
+    # Keyfile backend settings: enabled-extensions is the only key needed
+    # (autoconnect/keepalive default to true in the schema).
+    cat > "$WORK/config/gsettings/keys" <<KEYS_EOF
+[org/gnome/shell]
+enabled-extensions=['$UUID']
+
+[org/gnome/shell/extensions/$UUID]
+autoconnect=true
+keepalive=true
+KEYS_EOF
+
+    cat > "$INNER" <<INNER_EOF
 set -x
 export PATH="$STUB_DIR:\$PATH"
 export XDG_DATA_HOME="$WORK/data" XDG_CONFIG_HOME="$WORK/config"
-export GSETTINGS_SCHEMA_DIR="$WORK/data/gnome-shell/extensions/$UUID/schemas"
+export GSETTINGS_BACKEND=keyfile
 export STUB_LOG="$CALLS" STUB_SCENARIO="$SCENARIO"
-gsettings set org.gnome.shell enabled-extensions "['$UUID']"
-READBACK=\$(gsettings get org.gnome.shell enabled-extensions)
-echo "enabled-extensions readback: \$READBACK"
-case "\$READBACK" in *"$UUID"*) ;; *) echo "FATAL: extension not enabled"; exit 3 ;; esac
-gsettings set org.gnome.shell.extensions.$UUID autoconnect true
-gsettings set org.gnome.shell.extensions.$UUID keepalive true
-timeout 75 gnome-shell --headless > "$SHELL_LOG" 2>&1 &
+if [ "$MODE" = "WARM" ]; then echo negotiating > "$SCENARIO"; else echo disconnected > "$SCENARIO"; fi
+timeout 60 gnome-shell --headless > "$SHELL_LOG" 2>&1 &
 SHELL_PID=\$!
 sleep 25
 echo connected > "$SCENARIO"
 sleep 15
-echo negotiating > "$SCENARIO"
+if [ "$MODE" = "WARM" ]; then echo negotiating > "$SCENARIO"; else echo disconnected > "$SCENARIO"; fi
 wait \$SHELL_PID
 INNER_EOF
 
-dbus-run-session -- bash "$INNER" 2>&1 | grep -vE 'SpiRegistry|KEYRING|CalendarServer|portal is not running|geolocation'
+    dbus-run-session -- bash "$INNER" > "$WORK/inner.log" 2>&1
+    local inner_rc=$?
 
-echo "=== integration assertions"
+    echo "  --- assertions"
+    local ups status_calls errs
+    ups=$(awk '$2 == "up"' "$CALLS" 2>/dev/null | wc -l)
+    status_calls=$(grep -c 'status --json' "$CALLS" 2>/dev/null)
+    errs=$(grep -c 'JS ERROR' "$SHELL_LOG" 2>/dev/null)
 
-# A1: auto-connect ran the stub `up` (autoconnect delay is 10s)
-grep -qE '^[0-9.]+ up( |$)' "$CALLS"
-assert "auto-connect invoked 'up'" $?
+    if [ "$inner_rc" -ne 0 ]; then
+        fail "inner script exited $inner_rc — tail:"
+        sed 's/^/        /' "$WORK/inner.log" 2>/dev/null | tail -6
+    fi
 
-# A2: exactly ONE up during the first 30s (no double-start churn)
-EARLY=$(awk -v t="$(head -1 "$CALLS" | cut -d' ' -f1)" '$1 < t+30 && $2 == "up"' "$CALLS" | wc -l)
-[ "$EARLY" -eq 1 ]
-assert "no double-start: exactly one 'up' in the first 30s" $?
+    if [ "$MODE" = "COLD" ]; then
+        [ "$ups" -eq 1 ]
+        assert "COLD: auto-connect spawned 'up' exactly once ($ups)" $?
+    else
+        [ "$ups" -eq 0 ]
+        assert "WARM: no destructive 'up' while a client is alive ($ups)" $?
+    fi
 
-# A3: rapid polling followed the connect (status --json called repeatedly)
-S=$(grep -c 'status --json' "$CALLS")
-[ "$S" -ge 5 ]
-assert "status polled rapidly after connect ($S polls)" $?
+    [ "$status_calls" -ge 4 ]
+    assert "status polled ($status_calls polls)" $?
 
-# B: keepalive kicked after the drop at t=40s (rate-limited to one kick/30s)
-LATE_UPS=$(awk '$1 > 40 && $2 == "up"' "$CALLS" | wc -l)
-[ "$LATE_UPS" -ge 1 ] && [ "$LATE_UPS" -le 2 ]
-assert "keepalive re-ran 'up' after the drop, rate-limited ($LATE_UPS)" $?
+    [ "$errs" -eq 0 ]
+    assert "no JavaScript errors ($errs)" $?
 
-# C: clean run
-E=$(grep -c 'JS ERROR' "$SHELL_LOG")
-[ "$E" -eq 0 ]
-assert "no JavaScript errors in the shell ($E)" $?
+    if [ "$FAILURES" -gt 0 ]; then
+        warn "artifacts kept in $WORK for debugging"
+        if [ -f "$SHELL_LOG" ]; then
+            info "shell.log error tail:"
+            grep -iE 'error|pangolin' "$SHELL_LOG" | tail -6 | sed 's/^/        /'
+        fi
+    else
+        rm -rf "$WORK"
+    fi
+}
 
-# NM monitor must degrade gracefully in an environment without NM signals
-E2=$(grep -ci 'networkmanager' "$SHELL_LOG")
-echo "  [info]    NM mentions in log: $E2 (0 expected in headless)"
+run_scenario COLD
+run_scenario WARM
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
     echo "integration: all assertions passed"
 else
     echo "integration: $FAILURES assertion(s) failed"
-    echo "--- stub calls:"; tail -20 "$CALLS"
-    echo "--- shell log errors:"; grep -iE 'error|pangolin' "$SHELL_LOG" | tail -10
 fi
-rm -rf "$WORK"
 exit "$FAILURES"

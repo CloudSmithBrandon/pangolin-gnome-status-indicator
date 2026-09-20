@@ -1,0 +1,31 @@
+[org/gnome/desktop/app-folders]
+folder-children=['System', 'Utilities', 'YaST', 'Pardus']
+
+[org/gnome/desktop/app-folders/folders/System]
+name='X-GNOME-Shell-System.directory'
+translate=true
+apps=['nm-connection-editor.desktop', 'org.gnome.baobab.desktop', 'org.gnome.DiskUtility.desktop', 'im-config.desktop', 'org.gnome.Logs.desktop', 'org.gnome.Sysprof.desktop']
+
+[org/gnome/desktop/app-folders/folders/Utilities]
+name='X-GNOME-Shell-Utilities.directory'
+translate=true
+apps=['org.gnome.Papers.desktop', 'org.gnome.font-viewer.desktop', 'org.gnome.Loupe.desktop', 'org.gnome.seahorse.Application.desktop']
+
+[org/gnome/desktop/app-folders/folders/YaST]
+name='suse-yast.directory'
+translate=true
+categories=['X-SuSE-YaST']
+
+[org/gnome/desktop/app-folders/folders/Pardus]
+name='X-Pardus-Apps.directory'
+translate=true
+categories=['X-Pardus-Apps']
+
+[org/gnome/shell]
+last-selected-power-profile='performance'
+
+[org/gnome/desktop/notifications/application/org-gnome-goa-daemon]
+application-id='org.gnome.goa-daemon.desktop'
+
+[org/gnome/desktop/notifications]
+application-children=['org-gnome-goa-daemon']
