@@ -36,15 +36,6 @@ export default class PangolinPreferences extends ExtensionPreferences {
         });
         connectionGroup.add(autoconnect);
 
-        const interfaceName = new Adw.EntryRow({
-            title: _('Tunnel interface name'),
-        });
-        interfaceName.text = settings.get_string('interface-name');
-        interfaceName.connect('changed', () => {
-            settings.set_string('interface-name', interfaceName.text.trim());
-        });
-        connectionGroup.add(interfaceName);
-
         const serverRow = new Adw.ActionRow({
             title: _('Pangolin server'),
             subtitle: _('Checking…'),
@@ -122,6 +113,16 @@ export default class PangolinPreferences extends ExtensionPreferences {
         });
         page.add(advancedGroup);
 
+        const interfaceName = new Adw.EntryRow({
+            title: _('Tunnel interface name'),
+            subtitle: _('Network device the tunnel creates. Leave it as "pangolin" unless it conflicts with another interface.'),
+        });
+        interfaceName.text = settings.get_string('interface-name');
+        interfaceName.connect('changed', () => {
+            settings.set_string('interface-name', interfaceName.text.trim());
+        });
+        advancedGroup.add(interfaceName);
+
         const mtu = Adw.SpinRow.new_with_range(576.0, 10000.0, 10.0);
         mtu.title = _('Tunnel MTU');
         mtu.subtitle = _('Maximum packet size inside the tunnel. Leave at 1280 unless you know you need a different value.');
@@ -157,67 +158,78 @@ export default class PangolinPreferences extends ExtensionPreferences {
         });
         page.add(updatesGroup);
 
+        const versionValue = new Gtk.Label({
+            label: _('…'),
+            valign: Gtk.Align.CENTER,
+        });
+        versionValue.add_css_class('dim-label');
         const versionRow = new Adw.ActionRow({
             title: _('Installed version'),
-            subtitle: _('Checking…'),
         });
+        versionRow.add_suffix(versionValue);
         updatesGroup.add(versionRow);
 
-        const checkRow = new Adw.ActionRow({
-            title: _('Latest release'),
-            subtitle: _('Press check to compare with the published release.'),
+        const updateRow = new Adw.ActionRow({
+            title: _('Update'),
+            subtitle: _('Checking…'),
         });
-        const checkButton = new Gtk.Button({
-            label: _('Check'),
+        const updateButton = new Gtk.Button({
+            label: _('Check for updates'),
             valign: Gtk.Align.CENTER,
         });
-        checkRow.add_suffix(checkButton);
-        checkRow.activatable_widget = checkButton;
-        updatesGroup.add(checkRow);
+        updateRow.add_suffix(updateButton);
+        updateRow.activatable_widget = updateButton;
+        updatesGroup.add(updateRow);
 
-        const installRow = new Adw.ActionRow({
-            title: _('Install update'),
-            subtitle: _('Runs the client updater in a terminal window.'),
-            visible: false,
-        });
-        const installButton = new Gtk.Button({
-            label: _('Install'),
-            valign: Gtk.Align.CENTER,
-        });
-        installRow.add_suffix(installButton);
-        installRow.activatable_widget = installButton;
-        updatesGroup.add(installRow);
+        // Picks the bare version number out of `pangolin version`, whose
+        // output also carries an update banner when a release exists.
+        const installedVersion = (out) =>
+            out.split('\n').map(l => l.trim()).find(l => /^v?\d+(\.\d+)+$/.test(l)) ?? '';
 
-        const checkForUpdates = async () => {
-            checkButton.sensitive = false;
-            installRow.visible = false;
-            checkRow.subtitle = _('Checking…');
+        let updateAvailable = false;
+
+        const runCheck = async () => {
+            updateButton.sensitive = false;
+            updateButton.label = _('Checking…');
+            updateRow.subtitle = _('Comparing with the published release…');
             try {
-                const local = (await execAsync(['pangolin', 'version'], null)).stdout;
+                const local = installedVersion((await execAsync(['pangolin', 'version'], null)).stdout);
+                versionValue.label = local || _('unknown');
                 const remoteRaw = (await execAsync(['curl', '-s', '-m', '15', RELEASES_URL], null)).stdout;
                 const remote = JSON.parse(remoteRaw).tag_name;
                 settings.set_string('last-remote-version', remote);
 
-                versionRow.subtitle = local;
-                const outdated = compareVersions(remote, local) > 0;
-                checkRow.subtitle = outdated
-                    ? _('Update available: %s').format(remote)
-                    : _('Up to date');
-                installRow.visible = outdated;
+                updateAvailable = local !== '' && compareVersions(remote, local) > 0;
+                if (updateAvailable) {
+                    updateRow.subtitle = _('Version %s is available.').format(remote);
+                    updateButton.label = _('Install…');
+                    updateButton.add_css_class('suggested-action');
+                } else {
+                    updateRow.subtitle = _('Up to date.');
+                    updateButton.label = _('Check for updates');
+                    updateButton.remove_css_class('suggested-action');
+                }
             } catch (e) {
-                checkRow.subtitle = _('Check failed: %s').format(e.message);
+                updateAvailable = false;
+                updateRow.subtitle = _('Check failed: %s').format(e.message);
+                updateButton.label = _('Check for updates');
+                updateButton.remove_css_class('suggested-action');
             }
-            checkButton.sensitive = true;
+            updateButton.sensitive = true;
         };
-
-        checkButton.connect('clicked', () => checkForUpdates());
 
         const installUpdate = () => {
             // Run in a visible terminal so the updater's output (including any
             // password prompt) is right in front of the user.
-            execAsync(['ptyxis', '--', 'pangolin', 'update'], null).catch(() => {});
+            execAsync(['ptyxis', '--new-window', '--', 'pangolin', 'update'], null).catch(() => {});
         };
-        installButton.connect('clicked', () => installUpdate());
+
+        updateButton.connect('clicked', () => {
+            if (updateAvailable)
+                installUpdate();
+            else
+                runCheck().catch(() => {});
+        });
 
         // --- Bindings & initial state ------------------------------------
         settings.bind('autoconnect', autoconnect, 'active', Gio.SettingsBindFlags.DEFAULT);
@@ -225,7 +237,6 @@ export default class PangolinPreferences extends ExtensionPreferences {
         settings.bind('prefer-local-routes', preferLocalRoutes, 'active', Gio.SettingsBindFlags.DEFAULT);
         settings.bind('holepunch', holepunch, 'active', Gio.SettingsBindFlags.DEFAULT);
 
-        versionRow.subtitle = _('Press check to detect the installed version');
-        checkForUpdates().catch(() => {});
+        runCheck().catch(() => {});
     }
 }
