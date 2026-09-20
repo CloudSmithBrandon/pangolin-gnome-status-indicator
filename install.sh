@@ -3,7 +3,7 @@ set -euo pipefail
 
 EXTENSION_UUID="pangolin-indicator@yetanother.at"
 INSTALL_DIR="${HOME}/.local/share/gnome-shell/extensions/${EXTENSION_UUID}"
-SHIPPED=(metadata.json extension.js prefs.js status.js askpass.sh)
+SHIPPED=(metadata.json extension.js prefs.js status.js net.js)
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "Installing Pangolin VPN Status Indicator..."
@@ -13,7 +13,8 @@ for f in "${SHIPPED[@]}"; do
     cp "${REPO_DIR}/${f}" "${INSTALL_DIR}/"
 done
 cp "${REPO_DIR}/schemas/"*.gschema.xml "${INSTALL_DIR}/schemas/"
-chmod +x "${INSTALL_DIR}/askpass.sh"
+# askpass.sh is obsolete since the pkexec migration; remove stale copies.
+rm -f "${INSTALL_DIR}/askpass.sh"
 
 # Compile the GSettings schema so the extension and its preferences window
 # can read the settings.

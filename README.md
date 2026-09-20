@@ -13,6 +13,8 @@ Fork of
 - Connection status in the panel and quick settings, with server and site
   details in the tile menu
 - Connect/disconnect from the quick settings tile
+- Keep-alive: optionally reconnect automatically when the tunnel drops
+- Open Dashboard menu entry for the enrolled server
 - **Settings window** (gear entry in the tile menu) covering the CLI's
   tunnel flags: auto-connect at login, interface name, upstream DNS,
   DNS override, local-route preference, direct connections, MTU, log level
@@ -58,13 +60,10 @@ re-running `install.sh` after a change also needs one logout (on X11,
 
 ### One-time system setup
 
-Creating the tunnel's TUN device requires root. Give the Pangolin binary the
-needed capability once, and the extension can connect unprivileged — silently,
-including auto-connect at login:
-
-```bash
-sudo setcap cap_net_admin+ep /usr/local/bin/pangolin
-```
+The Pangolin CLI performs its own privileged operations: when it cannot
+create the tunnel unprivileged, the extension escalates through `pkexec`,
+so you get GNOME's native password dialog — no `setcap` or `sudoers`
+configuration is required.
 
 If you previously ran the Pangolin CLI as an unattended systemd service
 (e.g. `pangolin-cli.service`), remove it so it stops fighting the extension
@@ -75,10 +74,7 @@ sudo systemctl disable --now pangolin-cli.service && \
   sudo rm /etc/systemd/system/pangolin-cli.service
 ```
 
-`install.sh` detects both conditions and prints these commands for you.
-
-Without the capability, connecting falls back to `sudo -A` with a graphical
-password prompt (zenity), which also works.
+`install.sh` detects a leftover service and prints this command for you.
 
 ## Uninstall
 
@@ -93,8 +89,10 @@ password prompt (zenity), which also works.
   your `PATH`
 - `glib-compile-schemas` (present on GNOME systems; compiles the settings
   schema at install time)
-- `sudo` and `zenity` (only needed if you skip the setcap step above)
-- `ptyxis` (for the "View Logs" action)
+- A polkit authentication agent (GNOME provides one) for the tunnel
+  password dialog
+- Any terminal emulator (ptyxis, gnome-terminal, GNOME Console or xterm)
+  for View Logs, Sign In and CLI updates
 
 ## Tests
 

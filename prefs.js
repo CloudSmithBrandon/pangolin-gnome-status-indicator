@@ -12,6 +12,7 @@ import Gio from 'gi://Gio';
 import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 import {compareVersions, execAsync, extractVersion, parseAuthStatus} from './status.js';
+import {fetchJson} from './net.js';
 
 const RELEASES_URL = 'https://api.github.com/repos/fosrl/cli/releases/latest';
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -35,6 +36,12 @@ export default class PangolinPreferences extends ExtensionPreferences {
             subtitle: _('Start the tunnel shortly after you sign in, using the settings below.'),
         });
         connectionGroup.add(autoconnect);
+
+        const keepalive = new Adw.SwitchRow({
+            title: _('Keep the tunnel connected'),
+            subtitle: _('Reconnect automatically if the tunnel drops, unless you disconnected it yourself.'),
+        });
+        connectionGroup.add(keepalive);
 
         const serverRow = new Adw.ActionRow({
             title: _('Pangolin server'),
@@ -193,8 +200,7 @@ export default class PangolinPreferences extends ExtensionPreferences {
             try {
                 const local = installedVersion((await execAsync(['pangolin', 'version'], null)).stdout);
                 versionValue.label = local || _('unknown');
-                const remoteRaw = (await execAsync(['curl', '-s', '-m', '15', RELEASES_URL], null)).stdout;
-                const remote = JSON.parse(remoteRaw).tag_name;
+                const remote = (await fetchJson(RELEASES_URL, null)).tag_name;
                 settings.set_string('last-remote-version', remote);
 
                 updateAvailable = local !== '' && compareVersions(remote, local) > 0;
@@ -231,6 +237,7 @@ export default class PangolinPreferences extends ExtensionPreferences {
 
         // --- Bindings & initial state ------------------------------------
         settings.bind('autoconnect', autoconnect, 'active', Gio.SettingsBindFlags.DEFAULT);
+        settings.bind('keepalive', keepalive, 'active', Gio.SettingsBindFlags.DEFAULT);
         settings.bind('override-dns', overrideDns, 'active', Gio.SettingsBindFlags.DEFAULT);
         settings.bind('prefer-local-routes', preferLocalRoutes, 'active', Gio.SettingsBindFlags.DEFAULT);
         settings.bind('holepunch', holepunch, 'active', Gio.SettingsBindFlags.DEFAULT);

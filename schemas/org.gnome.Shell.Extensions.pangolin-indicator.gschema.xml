@@ -6,6 +6,11 @@
       <summary>Connect automatically at login</summary>
       <description>Start the tunnel shortly after you sign in, using the settings below.</description>
     </key>
+    <key name="keepalive" type="b">
+      <default>false</default>
+      <summary>Keep the tunnel connected</summary>
+      <description>Reconnect automatically when the tunnel drops, unless you disconnected it yourself.</description>
+    </key>
     <key name="interface-name" type="s">
       <default>"pangolin"</default>
       <summary>Tunnel interface name</summary>

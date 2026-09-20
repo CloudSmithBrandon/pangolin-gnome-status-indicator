@@ -13,6 +13,10 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as QuickSettings from 'resource:///org/gnome/shell/ui/quickSettings.js';
+import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
+import * as Config from 'resource:///org/gnome/shell/misc/config.js';
+
+import {fetchJson} from './net.js';
 
 import {
     CONNECTED_ICON,
@@ -218,6 +222,8 @@ export default class PangolinStatusExtension extends Extension {
         this._rapidAttempts = 0;
         this._auth = null;
         this._tunnelBusy = false;
+        this._desiredConnected = null;
+        this._lastKeepaliveKick = 0;
         this._settings = this.getSettings();
 
         this._indicator = new PangolinIndicator(this);
@@ -289,6 +295,7 @@ export default class PangolinStatusExtension extends Extension {
         if (this._tunnelBusy)
             return Promise.resolve(false);
         this._tunnelBusy = true;
+        this._desiredConnected = true;
 
         return this.runCommand(this.getUpArgs())
             .then(ok => ok ? true : this.runCommand(this.getUpArgs(), {sudo: true}))
@@ -302,6 +309,7 @@ export default class PangolinStatusExtension extends Extension {
         if (this._tunnelBusy)
             return Promise.resolve(false);
         this._tunnelBusy = true;
+        this._desiredConnected = false;
 
         return this.runCommand([PANGOLIN_BINARY, 'down'])
             .finally(() => {
@@ -333,8 +341,8 @@ export default class PangolinStatusExtension extends Extension {
     checkForUpdates(notifyWhenAvailable) {
         const localP = execAsync([PANGOLIN_BINARY, 'version'], this._cancellable)
             .then(r => extractVersion(r.stdout));
-        const remoteP = execAsync(['curl', '-s', '-m', '15', CLI_RELEASES_URL], this._cancellable)
-            .then(r => JSON.parse(r.stdout).tag_name)
+        const remoteP = fetchJson(CLI_RELEASES_URL, this._cancellable)
+            .then(data => data.tag_name)
             .catch(() => null);
 
         return Promise.all([localP, remoteP]).then(([local, remote]) => {
@@ -344,9 +352,48 @@ export default class PangolinStatusExtension extends Extension {
             this._settings?.set_string('last-remote-version', remote);
             const updateAvailable = compareVersions(remote, local) > 0;
             if (updateAvailable && notifyWhenAvailable)
-                Main.notify('Pangolin CLI update available', `Version ${remote} is ready to install — open Pangolin settings.`);
+                this._notifyUpdate(remote);
             return {local, remote, updateAvailable};
         });
+    }
+
+    _notifyUpdate(remote) {
+        this._notifyWithActions(
+            'Pangolin CLI update available',
+            `Version ${remote} is ready to install.`,
+            [
+                ['Install', () => this.launchTerminal([PANGOLIN_BINARY, 'update'])],
+                ['Settings', () => Main.extensionManager.openExtensionPrefs(this.uuid, this.metadata.name, {})],
+            ]);
+    }
+
+    /**
+     * Post a notification with action buttons. MessageTray's constructor and
+     * show APIs changed shape across GNOME 45/46, so both are supported and
+     * anything unexpected falls back to a plain notification.
+     */
+    _notifyWithActions(title, body, actions) {
+        try {
+            const [major] = Config.PACKAGE_VERSION.split('.').map(Number);
+            let source;
+            let notification;
+            if (major >= 46) {
+                source = new MessageTray.Source({title: 'Pangolin VPN', iconName: 'network-vpn-symbolic'});
+                notification = new MessageTray.Notification({source, title, body});
+            } else {
+                source = new MessageTray.Source('Pangolin VPN', 'network-vpn-symbolic');
+                notification = new MessageTray.Notification(source, title, body);
+            }
+            for (const [label, callback] of actions)
+                notification.addAction(label, callback);
+            Main.messageTray.add(source);
+            if (typeof source.showNotification === 'function')
+                source.showNotification(notification);
+            else
+                source.notify(notification);
+        } catch {
+            Main.notify(title, body);
+        }
     }
 
     /**
@@ -387,12 +434,18 @@ export default class PangolinStatusExtension extends Extension {
 
     /** Run `argv` detached; resolves true on exit status 0. */
     runCommand(argv, {sudo = false} = {}) {
-        const finalArgv = sudo ? ['sudo', '-A', ...argv] : argv;
+        let finalArgv = [...argv];
         try {
+            if (sudo) {
+                // polkit (pkexec) instead of `sudo -A`: the authentication
+                // dialog is native, and no user-writable helper script is
+                // ever spawned with privileges (EGO requirement).
+                const program = GLib.find_program_in_path(argv[0]);
+                if (!program)
+                    return Promise.resolve(false);
+                finalArgv = ['pkexec', program, ...argv.slice(1)];
+            }
             const launcher = new Gio.SubprocessLauncher();
-            if (sudo)
-                launcher.setenv('SUDO_ASKPASS', GLib.build_filenamev([this.path, 'askpass.sh']), true);
-
             const proc = launcher.spawnv(finalArgv);
             return new Promise(resolve => {
                 proc.wait_check_async(this._cancellable, (p, res) => {
@@ -484,11 +537,36 @@ export default class PangolinStatusExtension extends Extension {
 
         this._pollInFlight = true;
         this._fetchStatus()
-            .then(status => this.applyStatus(status))
+            .then(status => {
+                this.applyStatus(status);
+
+                // Adopt an already-running tunnel, and reconnect when the
+                // keepalive setting is on and the tunnel dropped without the
+                // user asking for it. Rate-limited so a dead network cannot
+                // spin the reconnect loop.
+                if (status.connected && this._desiredConnected === null)
+                    this._desiredConnected = true;
+                const keepalive = this._settings?.get_boolean('keepalive') ?? false;
+                if (!status.connected && keepalive && this._desiredConnected)
+                    this._keepaliveKick();
+            })
             .catch(() => {})
             .finally(() => {
                 this._pollInFlight = false;
             });
+    }
+
+    _keepaliveKick() {
+        const now = GLib.DateTime.new_now_utc().to_unix();
+        if (now - this._lastKeepaliveKick < 30)
+            return;
+        this._lastKeepaliveKick = now;
+        this.startTunnel()
+            .then(ok => {
+                if (ok)
+                    this.requestRapidPoll();
+            })
+            .catch(() => {});
     }
 
     applyStatus(status) {
