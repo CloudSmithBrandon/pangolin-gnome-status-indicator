@@ -15,6 +15,16 @@ done
 cp "${REPO_DIR}/schemas/"*.gschema.xml "${INSTALL_DIR}/schemas/"
 # askpass.sh is obsolete since the pkexec migration; remove stale copies.
 rm -f "${INSTALL_DIR}/askpass.sh"
+# The brand icon now installs into the user hicolor dir; remove the old
+# GResource blob.
+rm -f "${INSTALL_DIR}/pangolin-indicator.gresource"
+
+# Install the themed symbolic icon into the user's hicolor directory so the
+# shell's icon theme can find and recolor it (the extension process cannot
+# register icon theme search paths itself).
+ICON_DIR="${HOME}/.local/share/icons/hicolor/scalable/actions"
+mkdir -p "${ICON_DIR}"
+cp "${REPO_DIR}/icons/pangolin-vpn-symbolic.svg" "${ICON_DIR}/pangolin-vpn-symbolic.svg"
 
 # Compile the GSettings schema so the extension and its preferences window
 # can read the settings.
@@ -22,20 +32,6 @@ if command -v glib-compile-schemas &>/dev/null; then
     glib-compile-schemas "${INSTALL_DIR}/schemas/"
 else
     echo "warning: glib-compile-schemas not found; settings may not load."
-fi
-
-# Compile the themed icon GResource so the tile shows the Pangolin mark,
-# recolored by the current theme. Falls back to the prebuilt copy committed
-# with the repo when the compiler is not installed.
-if command -v glib-compile-resources &>/dev/null; then
-    glib-compile-resources --sourcedir="${REPO_DIR}/icons" \
-        --target="${INSTALL_DIR}/pangolin-indicator.gresource" \
-        "${REPO_DIR}/resources/pangolin-indicator.gresource.xml"
-elif [ -f "${REPO_DIR}/pangolin-indicator.gresource" ]; then
-    cp "${REPO_DIR}/pangolin-indicator.gresource" "${INSTALL_DIR}/"
-else
-    echo "warning: glib-compile-resources not found; the brand icon will not load."
-    echo "         Install it with: sudo apt install libglib2.0-dev-bin"
 fi
 
 # Ensure the extension is marked enabled in dconf (idempotent).

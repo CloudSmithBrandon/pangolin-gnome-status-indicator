@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Deterministic pangolin CLI stub for integration tests.
+#
+# The scenario file (STUB_SCENARIO, default /tmp/stub-scenario) holds one
+# word read by `status --json`:
+#   connected     -> daemon reports connected (with peers + version)
+#   negotiating   -> daemon reports connected:false (client up, relay pending)
+#   anything else -> daemon reports disconnected / no client
+#
+# Every invocation is appended to STUB_LOG (default /tmp/stub-calls.log) as
+# "<epoch> <argv...>" so tests can assert on call counts and ordering.
+set -u
+LOG="${STUB_LOG:-/tmp/stub-calls.log}"
+SCENARIO="${STUB_SCENARIO:-/tmp/stub-scenario}"
+
+printf '%s %s\n' "$(date +%s.%N)" "$*" >> "$LOG"
+
+scenario() { [ -f "$SCENARIO" ] && cat "$SCENARIO" || echo "disconnected"; }
+
+case "$1" in
+    up)
+        # Third arg may be --override-dns etc; nothing to do but succeed.
+        exit 0
+        ;;
+    down)
+        exit 0
+        ;;
+    status)
+        if [ "${2:-}" = "--json" ]; then
+            case "$(scenario)" in
+                connected)
+                    echo '{"connected":true,"version":"9.9.9","orgId":"stub","peers":{"2":{"siteId":2,"name":"stubsite","connected":true,"rtt":5,"isRelay":true}},"networkSettings":{"ipv4_addresses":["100.64.0.1"]}}'
+                    ;;
+                banner-connected)
+                    # 0.17-style output: update banner before the JSON
+                    echo "A new version is available: 9.9.10 (current: 9.9.9)"
+                    echo "Run 'pangolin update' to update to the latest version"
+                    echo '{"connected":true,"version":"9.9.9"}'
+                    ;;
+                negotiating)
+                    echo '{"connected":false}'
+                    ;;
+                *)
+                    echo '{"connected":false}'
+                    ;;
+            esac
+        else
+            case "$(scenario)" in
+                connected|banner-connected|negotiating) echo "Client is running" ;;
+                *) echo "No client is currently running" ;;
+            esac
+        fi
+        ;;
+    version)
+        echo "9.9.9"
+        ;;
+    auth)
+        if [ "${2:-}" = "status" ]; then
+            echo "Status: logged in"
+            echo "@ https://stub.invalid"
+        fi
+        ;;
+    logs)
+        # Simulate a following log stream; the caller cancels/kills us.
+        [ "${2:-}" = "client" ] || { echo "usage: logs client"; exit 1; }
+        echo "stub log line"
+        sleep 300
+        ;;
+    *)
+        echo "stub: unknown command $1" >&2
+        exit 1
+        ;;
+esac

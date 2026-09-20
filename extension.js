@@ -224,17 +224,6 @@ export default class PangolinStatusExtension extends Extension {
         this._lastKeepaliveKick = 0;
         this._settings = this.getSettings();
 
-        // Themed icon shipped in the extension GResource (compiled at
-        // install time); unregister on disable per the review guidelines.
-        try {
-            this._resource = Gio.Resource.load(
-                GLib.build_filenamev([this.path, 'pangolin-indicator.gresource']));
-            Gio.resources_register(this._resource);
-        } catch (e) {
-            this._resource = null;
-            log(`pangolin-indicator: could not load icon resource: ${e.message}`);
-        }
-
         this._indicator = new PangolinIndicator(this);
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
 
@@ -261,11 +250,6 @@ export default class PangolinStatusExtension extends Extension {
     disable() {
         this._cancellable?.cancel();
         this._cancellable = null;
-
-        if (this._resource) {
-            Gio.resources_unregister(this._resource);
-            this._resource = null;
-        }
 
         if (this._nmProxy) {
             if (this._nmSignal)
@@ -318,8 +302,18 @@ export default class PangolinStatusExtension extends Extension {
         this._tunnelBusy = true;
         this._desiredConnected = true;
 
-        return this.runCommand(this.getUpArgs())
-            .then(ok => ok ? true : this.runCommand(this.getUpArgs(), {escalate: true}))
+        // The tile can lag reality during relay negotiation (30-40s). A
+        // fresh check here prevents a stale "disconnected" view from
+        // replacing a healthy running tunnel.
+        return this.getStatus()
+            .then(status => {
+                if (status.connected) {
+                    this.requestRapidPoll();
+                    return true;
+                }
+                return this.runCommand(this.getUpArgs())
+                    .then(ok => ok ? true : this.runCommand(this.getUpArgs(), {escalate: true}));
+            })
             .finally(() => {
                 this._tunnelBusy = false;
             });

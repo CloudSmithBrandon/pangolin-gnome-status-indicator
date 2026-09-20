@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<gresources>
-  <gresource prefix="/org/gnome/Shell/Extensions/pangolin-indicator@yetanother.at/icons/hicolor/scalable/actions">
-    <file alias="pangolin-vpn-symbolic.svg" compressed="false">pangolin-vpn-symbolic.svg</file>
-  </gresource>
-</gresources>
