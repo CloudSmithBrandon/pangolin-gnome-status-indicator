@@ -9,7 +9,7 @@ import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import System from 'system';
 
-import {buildUpArgs, compareVersions, execAsync, interpretStatus, parseAuthStatus, shortHost, summarizePeers} from '../status.js';
+import {buildUpArgs, compareVersions, execAsync, extractVersion, interpretStatus, parseAuthStatus, shortHost, summarizePeers} from '../status.js';
 
 let failures = 0;
 function check(name, cond, extra = '') {
@@ -195,6 +195,37 @@ function check(name, cond, extra = '') {
         && compareVersions('v1.2.1', '1.2.0') > 0
         && compareVersions('0.16.0', 'v0.16') === 0
         && compareVersions('1.0', '1.0.0') === 0);
+}
+
+// 9. Banner tolerance + version extraction (pangolin 0.17 behavior)
+{
+    const banner = 'A new version is available: 9.9.9 (current: 0.17.0)\nRun \'pangolin update\' to update to the latest version\n\n';
+    const r = interpretStatus({ok: true, stdout: `${banner}{"connected":true,"version":"0.17.0"}`});
+    check('banner-prefixed JSON parses as connected', r.connected === true && r.data?.version === '0.17.0');
+}
+{
+    const banner = 'A new version is available: 9.9.9 (current: 0.16.0)\n\n';
+    const r = interpretStatus({ok: true, stdout: `${banner}{"connected":false}`});
+    check('banner JSON with connected:false stays false', r.connected === false && r.data !== null);
+}
+{
+    check('extractVersion picks the bare version line',
+        extractVersion('A new version is available: 9.9.9 (current: 0.17.0)\nRun \'pangolin update\'\n0.17.0\n') === '0.17.0'
+        && extractVersion('0.16.0\n') === '0.16.0'
+        && extractVersion('') === null
+        && extractVersion('no version here') === null);
+}
+{
+    let timedOut = false;
+    const startedAt = GLib.get_monotonic_time();
+    try {
+        await execAsync(['sleep', '5'], null, 300);
+    } catch (e) {
+        timedOut = e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED);
+    }
+    const elapsedMs = (GLib.get_monotonic_time() - startedAt) / 1000;
+    check('execAsync watchdog cancels a hung child', timedOut && elapsedMs < 2000,
+        `elapsed=${elapsedMs}ms`);
 }
 
 if (failures > 0) {

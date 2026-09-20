@@ -21,6 +21,7 @@ import {
     buildUpArgs,
     compareVersions,
     execAsync,
+    extractVersion,
     interpretStatus,
     parseAuthStatus,
     shortHost,
@@ -56,14 +57,19 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         this.menu.addAction('View Logs', () => {
-            this._extension.runCommand(['ptyxis', '--new-window', '--', PANGOLIN_BINARY, 'logs', 'client', '-f', '-n', '200']);
+            this._extension.launchTerminal([PANGOLIN_BINARY, 'logs', 'client', '-f', '-n', '200']);
         });
 
         this._signInItem = this.menu.addAction('Sign In…', () => {
-            this._extension.runCommand(['ptyxis', '--new-window', '--', PANGOLIN_BINARY, 'login']);
+            this._extension.launchTerminal([PANGOLIN_BINARY, 'login']);
         });
         this._signInItem.visible = false;
 
+        this._dashboardItem = this.menu.addAction('Open Dashboard', () => {
+            if (this._serverUrl)
+                Gio.AppInfo.launch_default_for_uri(this._serverUrl, null);
+        });
+        this._dashboardItem.visible = false;
         this.menu.addAction('Settings…', () => {
             this.menu.close();
             Main.extensionManager.openExtensionPrefs(this._extension.uuid, this._extension.metadata.name, {});
@@ -118,6 +124,8 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
     updateStatus({connected, data, auth}) {
         this._connected = connected;
         this.checked = connected;
+        this._serverUrl = auth?.serverUrl ?? null;
+        this._dashboardItem.visible = connected && !!this._serverUrl;
 
         if (connected) {
             const summary = summarizePeers(data);
@@ -324,14 +332,14 @@ export default class PangolinStatusExtension extends Extension {
      */
     checkForUpdates(notifyWhenAvailable) {
         const localP = execAsync([PANGOLIN_BINARY, 'version'], this._cancellable)
-            .then(r => r.stdout.trim());
+            .then(r => extractVersion(r.stdout));
         const remoteP = execAsync(['curl', '-s', '-m', '15', CLI_RELEASES_URL], this._cancellable)
             .then(r => JSON.parse(r.stdout).tag_name)
             .catch(() => null);
 
         return Promise.all([localP, remoteP]).then(([local, remote]) => {
-            if (remote === null)
-                return {local, remote: null, updateAvailable: false};
+            if (remote === null || local === null)
+                return {local, remote, updateAvailable: false};
 
             this._settings?.set_string('last-remote-version', remote);
             const updateAvailable = compareVersions(remote, local) > 0;
@@ -339,17 +347,6 @@ export default class PangolinStatusExtension extends Extension {
                 Main.notify('Pangolin CLI update available', `Version ${remote} is ready to install — open Pangolin settings.`);
             return {local, remote, updateAvailable};
         });
-    }
-
-    disable() {
-        this._cancellable?.cancel();
-        this._cancellable = null;
-
-        this._removeSource('_pollSource');
-        this._removeSource('_rapidSource');
-
-        this._indicator?.destroy();
-        this._indicator = null;
     }
 
     /**
@@ -376,9 +373,15 @@ export default class PangolinStatusExtension extends Extension {
      * the cache so connecting stays snappy.
      */
     async _fetchStatus() {
-        const auth = await this.getAuthStatus().catch(() => null);
-        if (auth !== null)
-            this._auth = auth;
+        // Auth rarely changes while connected: probe it on the first poll,
+        // whenever it looked signed-out, and every 5th poll after that.
+        this._pollCount = (this._pollCount ?? 0) + 1;
+        const authStale = !this._auth?.loggedIn;
+        if (authStale || this._pollCount % 5 === 1) {
+            const auth = await this.getAuthStatus().catch(() => null);
+            if (auth !== null)
+                this._auth = auth;
+        }
         return {...(await this.getStatus()), auth: this._auth};
     }
 
@@ -403,6 +406,33 @@ export default class PangolinStatusExtension extends Extension {
         } catch (e) {
             log(`pangolin-indicator: failed to run ${finalArgv.join(' ')}: ${e.message}`);
             return Promise.resolve(false);
+        }
+    }
+
+    /**
+     * Open a terminal window running `argv`, falling back through terminal
+     * emulators commonly present on GNOME systems. The wait is deliberately
+     * NOT bound to the extension cancellable: disabling the extension (e.g.
+     * on screen lock) must not kill a log window the user is reading.
+     */
+    launchTerminal(argv) {
+        const launchers = {
+            ptyxis: a => ['ptyxis', '--new-window', '--', ...a],
+            'gnome-terminal': a => ['gnome-terminal', '--', ...a],
+            kgx: a => ['kgx', '--', ...a],
+            xterm: a => ['xterm', '-e', ...a],
+        };
+        const emulator = Object.keys(launchers).find(t => GLib.find_program_in_path(t) !== null);
+        if (!emulator) {
+            Main.notify('Pangolin VPN', 'No terminal emulator found to open the requested view.');
+            return;
+        }
+        try {
+            const launcher = new Gio.SubprocessLauncher();
+            const proc = launcher.spawnv(launchers[emulator](argv));
+            proc.wait_async(null, (p, res) => p.wait_finish(res));
+        } catch (e) {
+            Main.notify('Pangolin VPN', `Could not launch terminal: ${e.message}`);
         }
     }
 

@@ -4,6 +4,7 @@
 // tested outside the shell with: gjs -m test/status-test.mjs
 
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 
 export const CONNECTED_ICON = 'network-vpn-symbolic';
 export const CONNECTING_ICON = 'network-vpn-acquiring-symbolic';
@@ -18,26 +19,52 @@ export const NO_CLIENT_MESSAGE = 'No client is currently running';
  * with status 0 and `stdout` is the merged, trimmed output. Never rejects
  * for non-zero exit codes; rejects only for spawn failures or cancellation.
  */
-export function execAsync(argv, cancellable = null) {
+export function execAsync(argv, cancellable = null, timeoutMs = 15000) {
     return new Promise((resolve, reject) => {
+        // A per-call cancellable lets the watchdog timeout abort this child
+        // without tearing down the extension-wide cancellable.
+        const childCancellable = new Gio.Cancellable();
+        let parentHandler = 0;
+        if (cancellable)
+            parentHandler = cancellable.connect(() => childCancellable.cancel());
+
+        let timeoutSource = 0;
+        if (timeoutMs > 0) {
+            timeoutSource = GLib.timeout_add(GLib.PRIORITY_DEFAULT, timeoutMs, () => {
+                childCancellable.cancel();
+                timeoutSource = 0;
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+
+        const settle = (fn, arg) => {
+            if (timeoutSource) {
+                GLib.Source.remove(timeoutSource);
+                timeoutSource = 0;
+            }
+            if (parentHandler)
+                cancellable.disconnect(parentHandler);
+            fn(arg);
+        };
+
         let proc;
         try {
             proc = new Gio.Subprocess({
                 argv,
                 flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE,
             });
-            proc.init(cancellable);
+            proc.init(childCancellable);
         } catch (e) {
-            reject(e);
+            settle(reject, e);
             return;
         }
 
-        proc.communicate_utf8_async(null, cancellable, (p, res) => {
+        proc.communicate_utf8_async(null, childCancellable, (p, res) => {
             try {
                 const [, stdout] = p.communicate_utf8_finish(res);
-                resolve({ok: p.get_exit_status() === 0, stdout: stdout ? stdout.trim() : ''});
+                settle(resolve, {ok: p.get_exit_status() === 0, stdout: stdout ? stdout.trim() : ''});
             } catch (e) {
-                reject(e);
+                settle(reject, e);
             }
         });
     });
@@ -51,17 +78,22 @@ export function interpretStatus({ok, stdout}) {
     if (!ok || !stdout || stdout.includes(NO_CLIENT_MESSAGE))
         return {connected: false, data: null};
 
-    try {
-        const data = JSON.parse(stdout);
-        // Trust the daemon's own connected flag when present; older output
-        // without it means a running client.
-        const connected = typeof data.connected === 'boolean' ? data.connected : true;
-        return {connected, data};
-    } catch {
-        // Fall back to heuristics for human-readable output of other versions.
-        const text = stdout.toLowerCase();
-        return {connected: text.includes('running') || text.includes('connected'), data: null};
+    // 0.17.0 prefixes `status --json` with an update banner; parse from the
+    // first brace so banner text can never break (or spoof) the state.
+    const start = stdout.indexOf('{');
+    if (start >= 0) {
+        try {
+            const data = JSON.parse(stdout.slice(start));
+            const connected = typeof data.connected === 'boolean' ? data.connected : true;
+            return {connected, data};
+        } catch {
+            // fall through to heuristics
+        }
     }
+
+    // Heuristics for human-readable output of other versions.
+    const text = stdout.toLowerCase();
+    return {connected: text.includes('running') || text.includes('connected'), data: null};
 }
 
 /**
@@ -142,4 +174,16 @@ export function compareVersions(a, b) {
             return d;
     }
     return 0;
+}
+
+/**
+ * Extract the installed CLI version from `pangolin version` output, which
+ * may carry an update banner before the version line. Returns the bare
+ * version string ("0.17.0") or null when nothing version-like is present.
+ */
+export function extractVersion(output) {
+    if (!output)
+        return null;
+    const line = output.split('\n').map(l => l.trim()).find(l => /^v?\d+(\.\d+)+$/.test(l));
+    return line ?? null;
 }

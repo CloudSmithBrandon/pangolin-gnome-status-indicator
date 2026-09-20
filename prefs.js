@@ -11,7 +11,7 @@ import Gio from 'gi://Gio';
 
 import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
-import {compareVersions, execAsync, parseAuthStatus} from './status.js';
+import {compareVersions, execAsync, extractVersion, parseAuthStatus} from './status.js';
 
 const RELEASES_URL = 'https://api.github.com/repos/fosrl/cli/releases/latest';
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -182,8 +182,7 @@ export default class PangolinPreferences extends ExtensionPreferences {
 
         // Picks the bare version number out of `pangolin version`, whose
         // output also carries an update banner when a release exists.
-        const installedVersion = (out) =>
-            out.split('\n').map(l => l.trim()).find(l => /^v?\d+(\.\d+)+$/.test(l)) ?? '';
+        const installedVersion = out => extractVersion(out) ?? '';
 
         let updateAvailable = false;
 
