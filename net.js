@@ -31,6 +31,8 @@ export function fetchJson(url, cancellable = null) {
             reject(new Error(`invalid URL: ${url}`));
             return;
         }
+        // GitHub's API (among others) rejects requests without a User-Agent.
+        msg.request_headers.append('User-Agent', 'pangolin-gnome-extension');
         getSession().send_and_read_async(msg, GLib.PRIORITY_DEFAULT, cancellable, (sess, res) => {
             try {
                 const bytes = sess.send_and_read_finish(res);
