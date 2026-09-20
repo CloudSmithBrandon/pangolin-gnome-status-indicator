@@ -107,7 +107,11 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
     }
 
     _disconnect() {
-        this._setStatusConnecting();
+        this._connected = false;
+        this.checked = false;
+        this.subtitle = 'Disconnecting...';
+        this.menu.setHeader(BRAND_ICON, 'Pangolin VPN', 'Disconnecting...');
+        this._updateStatusSection(null);
 
         this._extension.stopTunnel()
             .then(() => this._extension.requestRapidPoll())
@@ -198,7 +202,7 @@ class PangolinIndicator extends QuickSettings.SystemIndicator {
 
     applyStatus(status) {
         const {connected} = status;
-        this._indicator.icon_name = connected ? BRAND_ICON : BRAND_ICON;
+        this._indicator.icon_name = BRAND_ICON;
         this._indicator.visible = connected;
         this._toggle.updateStatus(status);
     }
