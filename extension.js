@@ -93,8 +93,8 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this._busy = true;
         this._setStatusConnecting();
 
-        // Settings-built argv; falls back to sudo -A (zenity askpass) when
-        // the tunnel cannot be created unprivileged.
+        // Settings-built argv; escalates through pkexec (native polkit
+        // password dialog) when the CLI cannot run unprivileged.
         this._extension.startTunnel()
             .then(ok => {
                 if (ok)
@@ -239,6 +239,7 @@ export default class PangolinStatusExtension extends Extension {
         Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
 
         this._startPolling();
+        this._installNetworkMonitor();
 
         if (this._settings.get_boolean('autoconnect')) {
             this._autoConnectSource = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, AUTOCONNECT_DELAY, () => {
@@ -264,6 +265,12 @@ export default class PangolinStatusExtension extends Extension {
         if (this._resource) {
             Gio.resources_unregister(this._resource);
             this._resource = null;
+        }
+
+        if (this._nmProxy) {
+            if (this._nmSignal)
+                this._nmProxy.disconnect(this._nmSignal);
+            this._nmProxy = null;
         }
 
         this._removeSource('_pollSource');
@@ -301,8 +308,8 @@ export default class PangolinStatusExtension extends Extension {
 
     /**
      * Start the tunnel with the configured flags. Tries unprivileged first
-     * (current CLI builds internally run sudo even with file capabilities,
-     * so this usually fails) and falls back to sudo -A (zenity askpass),
+     * (current CLI builds internally escalate even with file capabilities,
+     * so this usually fails) and falls back to pkexec (polkit dialog),
      * carrying the same settings flags either way.
      */
     startTunnel() {
@@ -312,7 +319,7 @@ export default class PangolinStatusExtension extends Extension {
         this._desiredConnected = true;
 
         return this.runCommand(this.getUpArgs())
-            .then(ok => ok ? true : this.runCommand(this.getUpArgs(), {sudo: true}))
+            .then(ok => ok ? true : this.runCommand(this.getUpArgs(), {escalate: true}))
             .finally(() => {
                 this._tunnelBusy = false;
             });
@@ -446,11 +453,11 @@ export default class PangolinStatusExtension extends Extension {
         return {...(await this.getStatus()), auth: this._auth};
     }
 
-    /** Run `argv` detached; resolves true on exit status 0. */
-    runCommand(argv, {sudo = false} = {}) {
+    /** Run `argv`; with escalate, spawn through pkexec (polkit dialog). */
+    runCommand(argv, {escalate = false} = {}) {
         let finalArgv = [...argv];
         try {
-            if (sudo) {
+            if (escalate) {
                 // polkit (pkexec) instead of `sudo -A`: the authentication
                 // dialog is native, and no user-writable helper script is
                 // ever spawned with privileges (EGO requirement).
@@ -474,6 +481,68 @@ export default class PangolinStatusExtension extends Extension {
             log(`pangolin-indicator: failed to run ${finalArgv.join(' ')}: ${e.message}`);
             return Promise.resolve(false);
         }
+    }
+
+    /**
+     * Event-driven fast path: NetworkManager tells us when the tunnel
+     * interface (or the network around it) changes state, so we refresh the
+     * status immediately instead of waiting for the next poll tick. Polling
+     * stays the source of truth; this only cuts latency. Best-effort: if
+     * NetworkManager is unavailable the regular poll still covers us.
+     */
+    _installNetworkMonitor() {
+        const proxy = new Gio.DBusProxy({
+            g_connection: Gio.bus_get_sync(Gio.BusType.SYSTEM, this._cancellable),
+            g_name: 'org.freedesktop.NetworkManager',
+            g_object_path: '/org/freedesktop/NetworkManager',
+            g_interface_name: 'org.freedesktop.NetworkManager',
+        });
+        proxy.init_async(GLib.PRIORITY_DEFAULT, this._cancellable, (p, res) => {
+            try {
+                p.init_finish(res);
+            } catch {
+                return; // NM not reachable; the poll loop still runs
+            }
+            this._nmProxy = p;
+            this._nmDevicePath = null;
+            this._nmNonTunnelDevices = new Set();
+            this._nmSignal = p.connect('g-signal', (emitter, sender, signal, params) => {
+                if (signal === 'DeviceStateChanged')
+                    this._onDeviceStateChanged(params.deepUnpack()[0]);
+            });
+        });
+    }
+
+    _onDeviceStateChanged(devicePath) {
+        if (devicePath === this._nmDevicePath) {
+            this.requestRapidPoll();
+            return;
+        }
+        if (!this._nmNonTunnelDevices)
+            return;
+        if (this._nmNonTunnelDevices.has(devicePath))
+            return;
+
+        const iface = this._settings?.get_string('interface-name') ?? 'pangolin';
+        const device = new Gio.DBusProxy({
+            g_connection: Gio.bus_get_sync(Gio.BusType.SYSTEM, null),
+            g_name: 'org.freedesktop.NetworkManager',
+            g_object_path: devicePath,
+            g_interface_name: 'org.freedesktop.NetworkManager.Device',
+        });
+        device.init_async(GLib.PRIORITY_DEFAULT, null, (p, res) => {
+            try {
+                p.init_finish(res);
+                if (p.Interface === iface) {
+                    this._nmDevicePath = devicePath;
+                    this.requestRapidPoll();
+                } else {
+                    this._nmNonTunnelDevices.add(devicePath);
+                }
+            } catch {
+                this._nmNonTunnelDevices.add(devicePath);
+            }
+        });
     }
 
     /**
