@@ -43,7 +43,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
     _init(extension) {
         super._init({
             title: 'Pangolin VPN',
-            iconName: DISBRAND_ICON,
+            iconName: BRAND_ICON,
             toggleMode: true,
         });
 
@@ -51,7 +51,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         this._connected = false;
         this._busy = false;
 
-        this.menu.setHeader(DISBRAND_ICON, 'Pangolin VPN', 'Disconnected');
+        this.menu.setHeader(BRAND_ICON, 'Pangolin VPN', 'Disconnected');
 
         this._statusSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._statusSection);
@@ -138,10 +138,10 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
             this.menu.setHeader(BRAND_ICON, 'Pangolin VPN', subtitle);
         } else if (auth && !auth.loggedIn) {
             this.subtitle = 'Not signed in';
-            this.menu.setHeader(DISBRAND_ICON, 'Pangolin VPN', 'Not signed in');
+            this.menu.setHeader(BRAND_ICON, 'Pangolin VPN', 'Not signed in');
         } else {
             this.subtitle = 'Disconnected';
-            this.menu.setHeader(DISBRAND_ICON, 'Pangolin VPN', 'Disconnected');
+            this.menu.setHeader(BRAND_ICON, 'Pangolin VPN', 'Disconnected');
         }
 
         this._signInItem.visible = !connected && auth?.loggedIn === false;
@@ -190,7 +190,7 @@ class PangolinIndicator extends QuickSettings.SystemIndicator {
         super._init();
 
         this._indicator = this._addIndicator();
-        this._indicator.icon_name = DISBRAND_ICON;
+        this._indicator.icon_name = BRAND_ICON;
 
         this._toggle = new PangolinToggle(extension);
         this.quickSettingsItems.push(this._toggle);
@@ -198,7 +198,7 @@ class PangolinIndicator extends QuickSettings.SystemIndicator {
 
     applyStatus(status) {
         const {connected} = status;
-        this._indicator.icon_name = connected ? BRAND_ICON : DISBRAND_ICON;
+        this._indicator.icon_name = connected ? BRAND_ICON : BRAND_ICON;
         this._indicator.visible = connected;
         this._toggle.updateStatus(status);
     }
@@ -392,10 +392,10 @@ export default class PangolinStatusExtension extends Extension {
             let source;
             let notification;
             if (major >= 46) {
-                source = new MessageTray.Source({title: 'Pangolin VPN', iconName: 'BRAND_ICON'});
+                source = new MessageTray.Source({title: 'Pangolin VPN', iconName: BRAND_ICON});
                 notification = new MessageTray.Notification({source, title, body});
             } else {
-                source = new MessageTray.Source('Pangolin VPN', 'BRAND_ICON');
+                source = new MessageTray.Source('Pangolin VPN', BRAND_ICON);
                 notification = new MessageTray.Notification(source, title, body);
             }
             for (const [label, callback] of actions)
