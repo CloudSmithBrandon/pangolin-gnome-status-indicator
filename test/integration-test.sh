@@ -45,6 +45,7 @@ run_scenario() { # run_scenario <MODE>
     chmod +x "$STUB_DIR/pangolin" "$STUB_DIR/pgrep"
     cp "$ROOT"/metadata.json "$ROOT"/extension.js "$ROOT"/prefs.js "$ROOT"/status.js "$ROOT"/net.js \
         "$WORK/data/gnome-shell/extensions/$UUID/"
+    cp -r "$ROOT/icons" "$WORK/data/gnome-shell/extensions/$UUID/icons"
     cp "$ROOT"/schemas/*.gschema.xml "$WORK/data/gnome-shell/extensions/$UUID/schemas/"
     if ! glib-compile-schemas "$WORK/data/gnome-shell/extensions/$UUID/schemas/" 2>/dev/null; then
         fail "schema compile failed"

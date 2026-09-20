@@ -6,6 +6,12 @@
 import GLib from 'gi://GLib';
 import Soup from 'gi://Soup';
 
+// Single source of truth for the release feed URL. The HTML endpoint
+// 302-redirects to /tag/<version>: the final URL carries the version and
+// the endpoint is NOT subject to the JSON API's rate limit
+// (api.github.com 403s and never redirects).
+export const CLI_RELEASES_URL = 'https://github.com/fosrl/cli/releases/latest';
+
 let _session = null;
 
 function getSession() {

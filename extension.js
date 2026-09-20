@@ -16,7 +16,7 @@ import * as QuickSettings from 'resource:///org/gnome/shell/ui/quickSettings.js'
 import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 import * as Config from 'resource:///org/gnome/shell/misc/config.js';
 
-import {fetchFinalUrl} from './net.js';
+import {CLI_RELEASES_URL, fetchFinalUrl} from './net.js';
 
 import {
     buildUpArgs,
@@ -37,10 +37,9 @@ const RAPID_POLL_INTERVAL = 2;
 const RAPID_POLL_MAX_ATTEMPTS = 30;
 const AUTOCONNECT_DELAY = 10;
 const UPDATE_CHECK_DELAY = 20;
-// The HTML releases endpoint 302-redirects to /tag/<version>: the final URL
-// carries the version and the endpoint is NOT subject to the JSON API's
-// unauthenticated rate limit (api.github.com 403s and never redirects).
-const CLI_RELEASES_URL = 'https://github.com/fosrl/cli/releases/latest';
+// Seconds between keepalive reconnect attempts; also the rate limit that
+// keeps the drop-observation kick and the poll-time kick from churning.
+const KEEPALIVE_KICK_INTERVAL = 30;
 
 const PangolinToggle = GObject.registerClass(
 class PangolinToggle extends QuickSettings.QuickMenuToggle {
@@ -107,6 +106,11 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
             .then(ok => {
                 if (ok)
                     this._extension.requestRapidPoll();
+                else
+                    // User-initiated: silence here would look like the tile
+                    // lying. Auto-connect/keepalive retries stay silent.
+                    Main.notify('Pangolin VPN',
+                        'Could not start the tunnel — see View Logs for details.');
             })
             .catch(() => {})
             .finally(() => {
@@ -123,8 +127,7 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
 
         this._extension.stopTunnel()
             .then(() => this._extension.requestRapidPoll())
-            .catch(() => {})
-            .finally(() => {});
+            .catch(() => {});
     }
 
     _setStatusConnecting() {
@@ -428,10 +431,10 @@ export default class PangolinStatusExtension extends Extension {
             let source;
             let notification;
             if (major >= 46) {
-                source = new MessageTray.Source({title: 'Pangolin VPN', iconName: 'network-vpn-symbolic'});
+                source = new MessageTray.Source({title: 'Pangolin VPN', iconName: 'pangolin-vpn-symbolic'});
                 notification = new MessageTray.Notification({source, title, body});
             } else {
-                source = new MessageTray.Source('Pangolin VPN', 'network-vpn-symbolic');
+                source = new MessageTray.Source('Pangolin VPN', 'pangolin-vpn-symbolic');
                 notification = new MessageTray.Notification(source, title, body);
             }
             for (const [label, callback] of actions)
@@ -661,8 +664,10 @@ export default class PangolinStatusExtension extends Extension {
 
                 // Adopt an already-running tunnel, and reconnect when the
                 // keepalive setting is on and the tunnel dropped without the
-                // user asking for it. Rate-limited so a dead network cannot
-                // spin the reconnect loop.
+                // user asking for it. This is the steady-state retry path;
+                // applyStatus's transition kick is the immediate-reaction
+                // path (also fires on rapid ticks). _keepaliveKick's rate
+                // limit deduplicates the double call on a drop tick.
                 if (status.connected && this._desiredConnected === null)
                     this._desiredConnected = true;
                 const keepalive = this._settings?.get_boolean('keepalive') ?? false;
@@ -677,7 +682,7 @@ export default class PangolinStatusExtension extends Extension {
 
     _keepaliveKick() {
         const now = GLib.DateTime.new_now_utc().to_unix();
-        if (now - this._lastKeepaliveKick < 30)
+        if (now - this._lastKeepaliveKick < KEEPALIVE_KICK_INTERVAL)
             return;
         this._lastKeepaliveKick = now;
         this.startTunnel()

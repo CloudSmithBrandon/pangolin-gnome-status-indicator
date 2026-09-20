@@ -19,12 +19,12 @@ import {
     terminalArgv,
     versionFromReleaseRedirect,
 } from './status.js';
-import {fetchFinalUrl} from './net.js';
+import {CLI_RELEASES_URL, fetchFinalUrl} from './net.js';
 
-// The HTML endpoint redirects to /tag/<version>; the JSON API would
-// rate-limit (403) and never carries the tag in a URL.
-const RELEASES_URL = 'https://github.com/fosrl/cli/releases/latest';
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
+// Post-install version polling cadence (15 s × 8 ≈ two minutes).
+const UPDATE_POLL_INTERVAL = 15;
+const UPDATE_POLL_MAX_ATTEMPTS = 8;
 
 export default class PangolinPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
@@ -225,7 +225,7 @@ export default class PangolinPreferences extends ExtensionPreferences {
             try {
                 const local = installedVersion((await execAsync(['pangolin', 'version'], null)).stdout);
                 versionValue.label = local || _('unknown');
-                const finalUrl = await fetchFinalUrl(RELEASES_URL, null);
+                const finalUrl = await fetchFinalUrl(CLI_RELEASES_URL, null);
                 const remote = versionFromReleaseRedirect(finalUrl);
                 if (remote === null)
                     throw new Error(_('could not determine the latest release'));
@@ -281,9 +281,9 @@ export default class PangolinPreferences extends ExtensionPreferences {
             const before = versionValue.label;
             let attempts = 0;
             const reschedule = () => {
-                if (pollClosed || attempts >= 8)
+                if (pollClosed || attempts >= UPDATE_POLL_MAX_ATTEMPTS)
                     return false;
-                const id = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 15,
+                const id = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, UPDATE_POLL_INTERVAL,
                     () => { pollSources.delete(id); pollInstalled(); return GLib.SOURCE_REMOVE; });
                 pollSources.add(id);
                 return true;
@@ -317,7 +317,7 @@ export default class PangolinPreferences extends ExtensionPreferences {
             if (updateAvailable)
                 installUpdate();
             else
-                runCheck().catch(() => {});
+                runCheck();
         });
 
         // --- Bindings & initial state ------------------------------------
@@ -328,6 +328,6 @@ export default class PangolinPreferences extends ExtensionPreferences {
         settings.bind('prefer-local-routes', preferLocalRoutes, 'active', Gio.SettingsBindFlags.DEFAULT);
         settings.bind('holepunch', holepunch, 'active', Gio.SettingsBindFlags.DEFAULT);
 
-        runCheck().catch(() => {});
+        runCheck();
     }
 }

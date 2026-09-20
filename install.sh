@@ -13,6 +13,11 @@ for f in "${SHIPPED[@]}"; do
     cp "${REPO_DIR}/${f}" "${INSTALL_DIR}/"
 done
 cp "${REPO_DIR}/schemas/"*.gschema.xml "${INSTALL_DIR}/schemas/"
+# The brand icon is loaded by absolute path from the extension dir
+# (Gio.icon_new_for_string on ${extension.path}/icons/...), so it must
+# ship there too — the hicolor copy below only serves themed lookups.
+mkdir -p "${INSTALL_DIR}/icons"
+cp "${REPO_DIR}/icons/"*.svg "${INSTALL_DIR}/icons/"
 # askpass.sh is obsolete since the pkexec migration; remove stale copies.
 rm -f "${INSTALL_DIR}/askpass.sh"
 # The brand icon now installs into the user hicolor dir; remove the old
@@ -40,7 +45,7 @@ fi
 if command -v gsettings &>/dev/null; then
     CURRENT="$(gsettings get org.gnome.shell enabled-extensions)"
     if [[ "${CURRENT}" != *"${EXTENSION_UUID}"* ]]; then
-        if [[ "${CURRENT}" == "@as []" ]]; then
+        if [[ "${CURRENT}" == "@as []" || "${CURRENT}" == "[]" ]]; then
             gsettings set org.gnome.shell enabled-extensions "['${EXTENSION_UUID}']"
         else
             gsettings set org.gnome.shell enabled-extensions \

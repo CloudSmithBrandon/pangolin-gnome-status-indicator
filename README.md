@@ -99,7 +99,8 @@ Removes the extension, the themed icon and the extension's settings.
 
 - GNOME Shell 45+ (tested on 50.1)
 - [Pangolin](https://github.com/fosrl/pangolin) VPN client installed and in
-  your `PATH`
+  your `PATH` — output shapes from CLI 0.16 and 0.17 are both handled
+  (including 0.17's update banner before `--json` output)
 - `glib-compile-schemas` (present on GNOME systems; compiles the settings
   schema at install time)
 - A polkit authentication agent (GNOME provides one) for the tunnel
