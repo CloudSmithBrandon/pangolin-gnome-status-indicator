@@ -14,7 +14,7 @@ quick settings menu, plus a full settings window.
   default; disconnecting from the tile is always respected, and the setting
   can be turned off in preferences; retries back off if polkit
   authentication is cancelled, so you are never nagged with repeated
-  password dialogs)
+  password dialogs, and every failed attempt is journaled — View Logs)
 - Open Dashboard menu entry for the enrolled server (https URLs only)
 - **Settings window** (gear entry in the tile menu) covering the CLI's
   tunnel flags: auto-connect at login, interface name, upstream DNS,

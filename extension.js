@@ -121,7 +121,11 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
                         'Could not start the tunnel — see View Logs for details.');
                 }
             })
-            .catch(() => {})
+            .catch(e => {
+                // ok=false already notified; a rejection is the rare bug
+                // path — journal it so it can't vanish.
+                console.warn(`pangolin-indicator: connect attempt failed: ${e?.message ?? e}`);
+            })
             .finally(() => {
                 this._busy = false;
             });
@@ -394,9 +398,20 @@ export default class PangolinStatusExtension extends Extension {
                 .then(ok => {
                     if (ok)
                         this.requestRapidPoll();
+                    else
+                        // Deliberately no notification (login-time noise),
+                        // but never silent in the journal.
+                        console.warn('pangolin-indicator: auto-connect failed — ' +
+                            'unprivileged and escalated attempts could not start the tunnel');
                 })
-                .catch(() => {});
-        }).catch(() => {});
+                .catch(e => {
+                    console.warn(`pangolin-indicator: auto-connect failed: ${e?.message ?? e}`);
+                });
+        }).catch(e => {
+            // Status probe itself failed; the regular poll loop surfaces
+            // connectivity state, so only journal this.
+            console.warn(`pangolin-indicator: auto-connect status probe failed: ${e?.message ?? e}`);
+        });
     }
 
     /**
@@ -559,11 +574,23 @@ export default class PangolinStatusExtension extends Extension {
             const proc = launcher.spawnv(finalArgv);
             return new Promise(resolve => {
                 proc.wait_check_async(this._cancellable, (p, res) => {
+                    let ok = false;
                     try {
-                        resolve(p.wait_check_finish(res));
-                    } catch {
-                        resolve(false);
+                        ok = p.wait_check_finish(res);
+                    } catch (e) {
+                        if (this._cancellable !== null)
+                            console.warn(`pangolin-indicator: ` +
+                                `\`${argv.join(' ')}\` could not be waited on: ${e?.message ?? e}`);
                     }
+                    // Child stderr inherits our journal stream, so the
+                    // CLI's own error text is already captured; this
+                    // line is the tagged breadcrumb that ties a failed
+                    // attempt to the indicator's action.
+                    if (!ok)
+                        console.warn(`pangolin-indicator: ` +
+                            `\`${argv.join(' ')}\` exited unsuccessfully` +
+                            (escalate ? ' (escalated)' : ''));
+                    resolve(ok);
                 });
             });
         } catch (e) {
@@ -739,11 +766,17 @@ export default class PangolinStatusExtension extends Extension {
                     this._kickBackoff = 0;
                     this.requestRapidPoll();
                 } else {
+                    // No notification (background path), but the failed
+                    // `up` attempts are already journaled by runCommand;
+                    // record the backoff decision too.
                     this._kickBackoff = Math.min(this._kickBackoff + 60, 570);
+                    console.warn(`pangolin-indicator: keepalive kick failed — ` +
+                        `next attempt in ${KEEPALIVE_KICK_INTERVAL + this._kickBackoff}s`);
                 }
             })
-            .catch(() => {
+            .catch(e => {
                 this._kickBackoff = Math.min(this._kickBackoff + 60, 570);
+                console.warn(`pangolin-indicator: keepalive kick error: ${e?.message ?? e}`);
             });
     }
 
