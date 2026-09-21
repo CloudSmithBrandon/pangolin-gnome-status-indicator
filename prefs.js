@@ -255,12 +255,22 @@ export default class PangolinPreferences extends ExtensionPreferences {
         // closed window stops the poll instead of ticking at dead widgets.
         const pollSources = new Set();
         let pollClosed = false;
-        window.connect('closed', () => {
+        const stopPolling = () => {
             pollClosed = true;
             for (const id of pollSources)
                 GLib.source_remove(id);
             pollSources.clear();
-        });
+        };
+        // The prefs object differs across shells: up through GNOME 50 it is
+        // an Adw.PreferencesWindow (a GtkWindow — 'close-request'), while
+        // newer libadwaita-based shells pass an Adw.PreferencesDialog (an
+        // Adw.Dialog — 'closed'). Neither object carries the other's
+        // signal, and connecting to a missing signal throws "No signal …",
+        // killing the whole preferences window.
+        if (Adw.PreferencesDialog && window instanceof Adw.PreferencesDialog)
+            window.connect('closed', stopPolling);
+        else
+            window.connect('close-request', stopPolling);
 
         const installUpdate = () => {
             // Run in a visible terminal so the updater's output (including

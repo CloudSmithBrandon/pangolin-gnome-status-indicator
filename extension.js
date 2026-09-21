@@ -334,7 +334,9 @@ export default class PangolinStatusExtension extends Extension {
     /**
      * Start the tunnel with the configured flags. Tries unprivileged first
      * (current CLI builds internally escalate even with file capabilities,
-     * so this usually fails) and falls back to pkexec (polkit dialog),
+     * so this usually fails) and falls back to pkexec — passwordless when
+     * the pangolin-tunnel launcher and its scoped polkit rule are installed
+     * (pangolin-bootstrap.sh), otherwise the polkit password dialog —
      * carrying the same settings flags either way.
      */
     startTunnel() {
@@ -469,6 +471,13 @@ export default class PangolinStatusExtension extends Extension {
             }
             for (const [label, callback] of actions)
                 notification.addAction(label, callback);
+            // Clicking the banner body (or the entry in the message-tray
+            // list) fires the notification's 'activated' signal — the
+            // action buttons are separate and easy to miss. Bind the first
+            // action as primary so the obvious click does the obvious
+            // thing instead of nothing.
+            if (actions.length > 0)
+                notification.connect('activated', () => actions[0][1]());
             Main.messageTray.add(source);
             if (typeof source.showNotification === 'function')
                 source.showNotification(notification);
@@ -531,42 +540,58 @@ export default class PangolinStatusExtension extends Extension {
             // user-writable target) cannot smuggle past this guard.
             const real = GLib.canonicalize_filename(program, null);
             if (real.startsWith(`${GLib.get_home_dir()}/`)) {
-                if (escalate) {
-                    // A user-writable binary would run as root the moment
-                    // the user types their polkit password. Refuse instead
-                    // of executing it (the EGO rule is: no user-writable
-                    // code ever runs with privileges). The unprivileged
-                    // branch still works, so the CLI itself is unaffected.
-                    console.warn(`pangolin-indicator: refusing pkexec escalation of ${real} — ` +
-                        'reinstall the CLI system-wide (e.g. /usr/local/bin)');
-                    return Promise.resolve(false);
-                }
-                console.warn(`pangolin-indicator: ${argv[0]} resolved inside your home directory ` +
-                    '(/usr/local/bin is the expected install location)');
+                // A user-writable binary must never run as root (EGO rule:
+                // no user-writable code ever runs with privileges). Escalated
+                // runs pick from vetted candidates below — and the root-owned
+                // launcher, when present, execs the system binary directly,
+                // never a home-resident one.
+                if (!escalate)
+                    console.warn(`pangolin-indicator: ${argv[0]} resolved inside your home directory ` +
+                        '(/usr/local/bin is the expected install location)');
             }
             if (escalate) {
-                // Code that runs as root must be modifiable by its owner
-                // alone: refuse group/other-writable targets. A vanished
-                // file fails closed.
-                try {
-                    const info = Gio.File.new_for_path(real).query_info(
-                        Gio.FILE_ATTRIBUTE_UNIX_MODE, Gio.FileQueryInfoFlags.NONE, null);
-                    if ((info.get_attribute_uint32(Gio.FILE_ATTRIBUTE_UNIX_MODE) & 0o022) !== 0) {
-                        console.warn(`pangolin-indicator: refusing pkexec escalation of ` +
-                            `group/other-writable ${real} — fix its permissions or reinstall system-wide`);
-                        return Promise.resolve(false);
+                // Escalation targets, best first: the root-owned launcher
+                // installed by pangolin-bootstrap.sh (a scoped polkit rule
+                // grants that one file passwordless execution, so Connect is
+                // a single click), then the CLI binary itself (generic
+                // polkit password dialog). Every candidate faces the same
+                // vetting: nothing home-resident or group/other-writable
+                // may ever run as root, and a vanished file fails closed.
+                const launcher = '/usr/local/lib/pangolin/pangolin-tunnel';
+                const candidates = GLib.file_test(launcher, GLib.FileTest.EXISTS)
+                    ? [launcher, real] : [real];
+                let escalated = false;
+                for (const candidate of candidates) {
+                    const canonical = GLib.canonicalize_filename(candidate, null);
+                    if (canonical.startsWith(`${GLib.get_home_dir()}/`))
+                        continue;
+                    try {
+                        const info = Gio.File.new_for_path(canonical).query_info(
+                            Gio.FILE_ATTRIBUTE_UNIX_MODE, Gio.FileQueryInfoFlags.NONE, null);
+                        if ((info.get_attribute_uint32(Gio.FILE_ATTRIBUTE_UNIX_MODE) & 0o022) !== 0)
+                            continue;
+                    } catch {
+                        continue;
                     }
-                } catch {
-                    console.warn(`pangolin-indicator: refusing pkexec escalation — cannot stat ${real}`);
+                    // polkit (pkexec) instead of `sudo -A`: the dialog is
+                    // native, and no user-writable helper script is ever
+                    // spawned with privileges. The launcher carries the
+                    // user's HOME inside it; the direct fallback passes it
+                    // through so the CLI (running as root) still reads the
+                    // USER's enrollment configuration.
+                    finalArgv = canonical === real
+                        ? ['pkexec', 'env', `HOME=${GLib.get_home_dir()}`,
+                           real, ...argv.slice(1)]
+                        : ['pkexec', canonical, ...argv.slice(1)];
+                    escalated = true;
+                    break;
+                }
+                if (!escalated) {
+                    console.warn(`pangolin-indicator: refusing pkexec escalation — ` +
+                        `${real} is group/other-writable, home-resident, or missing; ` +
+                        'fix its permissions or reinstall system-wide');
                     return Promise.resolve(false);
                 }
-                // polkit (pkexec) instead of `sudo -A`: the authentication
-                // dialog is native, and no user-writable helper script is
-                // ever spawned with privileges (EGO requirement). The user's
-                // HOME is passed through so the CLI (running as root) still
-                // reads the USER's enrollment configuration.
-                finalArgv = ['pkexec', 'env', `HOME=${GLib.get_home_dir()}`,
-                             program, ...argv.slice(1)];
             } else {
                 finalArgv = [program, ...argv.slice(1)];
             }
