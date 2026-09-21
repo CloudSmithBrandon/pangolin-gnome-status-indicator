@@ -134,6 +134,14 @@ function check(name, cond, extra = '') {
     const r = parseAuthStatus({ok: true, stdout: 'Status: logged out\n'});
     check('logged-out text means not signed in', r.loggedIn === false);
 }
+{
+    const r = parseAuthStatus({ok: true, stdout: 'Status: logged in\n@ http://pangolin.example.com\nUser: me@example.com\n'});
+    check('non-https server URL fails closed to null', r.loggedIn === true && r.serverUrl === null);
+}
+{
+    const r = parseAuthStatus({ok: true, stdout: 'Status: logged in\n@ https://evil.example.com\x01/x\n'});
+    check('control characters in server URL fail closed to null', r.serverUrl === null);
+}
 
 // 6. Peer summarization (hermetic, mirrors real status --json shape)
 {

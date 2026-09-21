@@ -12,7 +12,9 @@ quick settings menu, plus a full settings window.
 - Connect/disconnect from the quick settings tile
 - Keep-alive: the tunnel reconnects automatically when it drops (on by
   default; disconnecting from the tile is always respected, and the setting
-  can be turned off in preferences)
+  can be turned off in preferences; retries back off if polkit
+  authentication is cancelled, so you are never nagged with repeated
+  password dialogs)
 - Open Dashboard menu entry for the enrolled server (https URLs only)
 - **Settings window** (gear entry in the tile menu) covering the CLI's
   tunnel flags: auto-connect at login, interface name, upstream DNS,
@@ -100,7 +102,10 @@ Removes the extension, the themed icon and the extension's settings.
 - GNOME Shell 45+ (tested on 50.1)
 - [Pangolin](https://github.com/fosrl/pangolin) VPN client installed and in
   your `PATH` — output shapes from CLI 0.16 and 0.17 are both handled
-  (including 0.17's update banner before `--json` output)
+  (including 0.17's update banner before `--json` output). For the
+  privileged tunnel path the CLI must be installed system-wide (e.g.
+  `/usr/local/bin`): `pkexec` escalation refuses binaries resolved inside
+  your home directory or writable by group/other.
 - `glib-compile-schemas` (present on GNOME systems; compiles the settings
   schema at install time)
 - A polkit authentication agent (GNOME provides one) for the tunnel
@@ -117,6 +122,11 @@ Removes the extension, the themed icon and the extension's settings.
   check the installed CLI version in Settings → Updates and compare with
   [github.com/fosrl/cli/releases](https://github.com/fosrl/cli/releases);
   the check needs working DNS and internet access.
+- **Connect asks for a password, then fails** — View Logs (or
+  `journalctl --user`) shows `refusing pkexec escalation`: the CLI was
+  resolved inside your home directory or is group/other-writable.
+  Reinstall it system-wide (the Pangolin installer defaults to
+  `/usr/local/bin`).
 - **Connecting takes 30–40 s and shows relay** — clients behind symmetric
   NAT or multi-homed machines cannot holepunch and fall back to a relay.
   This is expected Pangolin behavior; the tile shows *Connecting…* until
@@ -131,6 +141,10 @@ Removes the extension, the themed icon and the extension's settings.
   never a script. The CLI binary is installed by the Pangolin project's own
   installer (currently into `/usr/local/bin`, owned by your user); review
   that path when hardening multi-user machines.
+- When the tunnel is escalated, `pkexec` runs the CLI as root with your
+  `HOME` passed through, so the root process reads your user-owned
+  enrollment configuration under your home directory. That is inherent to
+  the CLI's design; this trust rests on the Pangolin CLI itself.
 - Settings values are validated before they reach the CLI's argument list,
   so a malformed setting can only fall back to the CLI default, never add
   flags.

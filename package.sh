@@ -25,7 +25,7 @@ rm -f "${ZIP}"
 # Explicit file arguments, never directory recursion: a stray file dropped
 # into schemas/ or icons/ must not ship in the review bundle.
 zip -q -X "${ZIP}" \
-    metadata.json extension.js prefs.js status.js net.js \
+    "${FILES[@]}" \
     schemas/org.gnome.Shell.Extensions.pangolin-indicator.gschema.xml \
     icons/pangolin-vpn-symbolic.svg
 

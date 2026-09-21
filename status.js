@@ -111,9 +111,15 @@ export function parseAuthStatus({ok, stdout}) {
 
     const urlMatch = stdout.match(/^@\s+(\S+)\s*$/m);
     const userMatch = stdout.match(/^User:\s+(\S+)\s*$/m);
+    // serverUrl flows into menu rows, notifications and the dashboard
+    // launcher: keep only https URLs free of control/quote characters so
+    // every consumer inherits a safe value (anything else fails to null).
+    const rawUrl = urlMatch ? urlMatch[1] : null;
+    const serverUrl = rawUrl && /^https:\/\//i.test(rawUrl)
+        && !/[\x00-\x1f\x7f<>"'`\\]/.test(rawUrl) ? rawUrl : null;
     return {
         loggedIn: /^Status:\s*logged in/m.test(stdout),
-        serverUrl: urlMatch ? urlMatch[1] : null,
+        serverUrl,
         user: userMatch ? userMatch[1] : null,
     };
 }

@@ -109,13 +109,17 @@ class PangolinToggle extends QuickSettings.QuickMenuToggle {
         // password dialog) when the CLI cannot run unprivileged.
         this._extension.startTunnel()
             .then(ok => {
-                if (ok)
+                if (ok) {
                     this._extension.requestRapidPoll();
-                else
+                    // A deliberate user connect resets the keepalive
+                    // backoff so a later drop is retried promptly.
+                    this._extension._kickBackoff = 0;
+                } else {
                     // User-initiated: silence here would look like the tile
                     // lying. Auto-connect/keepalive retries stay silent.
                     Main.notify('Pangolin VPN',
                         'Could not start the tunnel — see View Logs for details.');
+                }
             })
             .catch(() => {})
             .finally(() => {
@@ -241,6 +245,9 @@ export default class PangolinStatusExtension extends Extension {
         this._desiredConnected = null;
         this._lastSeenConnected = null;
         this._lastKeepaliveKick = 0;
+        // Grows after consecutive failed keepalive escalations so a
+        // cancelled polkit dialog cannot re-prompt every tick.
+        this._kickBackoff = 0;
         this._settings = this.getSettings();
 
         this._indicator = new PangolinIndicator(this);
@@ -343,6 +350,9 @@ export default class PangolinStatusExtension extends Extension {
                 }
                 // A client process can still be alive while it negotiates a
                 // relay path; spawning `up` again would kill and restart it.
+                // Any user's client counts, including a root-run one: the
+                // CLI coordinates through a shared control socket, so a
+                // foreign client is adopted, never duplicated or killed.
                 return execAsync(['pgrep', '-f', '(^|/)pangolin (up|watchdog)( |$)'], this._cancellable, 3000)
                     .then(r => {
                         if ((r.ok && r.stdout.trim() !== '')) {
@@ -500,14 +510,19 @@ export default class PangolinStatusExtension extends Extension {
             const program = GLib.find_program_in_path(argv[0]);
             if (!program)
                 return Promise.resolve(false);
-            if (program.startsWith(`${GLib.get_home_dir()}/`)) {
+            // Vet the file that would actually execute, not the PATH-hit
+            // string: canonicalize resolves symlinks, so a link planted at
+            // a root-owned PATH location pointing into $HOME (or any
+            // user-writable target) cannot smuggle past this guard.
+            const real = GLib.canonicalize_filename(program, null);
+            if (real.startsWith(`${GLib.get_home_dir()}/`)) {
                 if (escalate) {
                     // A user-writable binary would run as root the moment
                     // the user types their polkit password. Refuse instead
                     // of executing it (the EGO rule is: no user-writable
                     // code ever runs with privileges). The unprivileged
                     // branch still works, so the CLI itself is unaffected.
-                    console.warn(`pangolin-indicator: refusing pkexec escalation of ${program} — ` +
+                    console.warn(`pangolin-indicator: refusing pkexec escalation of ${real} — ` +
                         'reinstall the CLI system-wide (e.g. /usr/local/bin)');
                     return Promise.resolve(false);
                 }
@@ -515,6 +530,21 @@ export default class PangolinStatusExtension extends Extension {
                     '(/usr/local/bin is the expected install location)');
             }
             if (escalate) {
+                // Code that runs as root must be modifiable by its owner
+                // alone: refuse group/other-writable targets. A vanished
+                // file fails closed.
+                try {
+                    const info = Gio.File.new_for_path(real).query_info(
+                        Gio.FILE_ATTRIBUTE_UNIX_MODE, Gio.FileQueryInfoFlags.NONE, null);
+                    if ((info.get_attribute_uint32(Gio.FILE_ATTRIBUTE_UNIX_MODE) & 0o022) !== 0) {
+                        console.warn(`pangolin-indicator: refusing pkexec escalation of ` +
+                            `group/other-writable ${real} — fix its permissions or reinstall system-wide`);
+                        return Promise.resolve(false);
+                    }
+                } catch {
+                    console.warn(`pangolin-indicator: refusing pkexec escalation — cannot stat ${real}`);
+                    return Promise.resolve(false);
+                }
                 // polkit (pkexec) instead of `sudo -A`: the authentication
                 // dialog is native, and no user-writable helper script is
                 // ever spawned with privileges (EGO requirement). The user's
@@ -698,15 +728,23 @@ export default class PangolinStatusExtension extends Extension {
 
     _keepaliveKick() {
         const now = GLib.DateTime.new_now_utc().to_unix();
-        if (now - this._lastKeepaliveKick < KEEPALIVE_KICK_INTERVAL)
+        // Rate limit, widened by _kickBackoff after consecutive failures
+        // (60 s per failure, capped so the retry gap never exceeds 10 min).
+        if (now - this._lastKeepaliveKick < KEEPALIVE_KICK_INTERVAL + this._kickBackoff)
             return;
         this._lastKeepaliveKick = now;
         this.startTunnel()
             .then(ok => {
-                if (ok)
+                if (ok) {
+                    this._kickBackoff = 0;
                     this.requestRapidPoll();
+                } else {
+                    this._kickBackoff = Math.min(this._kickBackoff + 60, 570);
+                }
             })
-            .catch(() => {});
+            .catch(() => {
+                this._kickBackoff = Math.min(this._kickBackoff + 60, 570);
+            });
     }
 
     applyStatus(status) {
